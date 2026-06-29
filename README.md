@@ -102,6 +102,93 @@ source = 'ecmwfthin'
 - **空间范围**: 支持全球范围的数据处理
 - **高度层**: 支持多个标准气压层（特别优化500hPa层）
 
+## 槽线输出数据格式
+
+`src/trough.py` 支持按起报时次、预报时效和气压层输出槽线图像与JSON数据。默认起报时次由 `calLatestBaseTime()` 按ECMWF发布时间计算；默认预报时效为 `000` 至 `240` 小时；默认气压层为 `200、500、850、925、950、1000 hPa`。
+
+### 输出路径
+
+- 图像文件：`data/{init_time}/trough_images/trough_{init_time}_{fc_hour}_{target_lev}hPa_ecmwf.png`
+- JSON文件：`data/{init_time}/trough_data/trough_{init_time}_{fc_hour}_{target_lev}hPa_ecmwf.json`
+
+例如：
+
+```text
+data/2024061412/trough_images/trough_2024061412_000_500hPa_ecmwf.png
+data/2024061412/trough_data/trough_2024061412_000_500hPa_ecmwf.json
+```
+
+### JSON结构
+
+每个JSON文件只保存一个 `init_time + fc_hour + target_lev` 的槽线结果。`trough_lines` 是槽线列表，每条槽线包含切变类型、原始点、平滑后点和诊断属性。
+
+```json
+{
+  "init_time": "2024061412",
+  "fc_hour": "000",
+  "target_lev": 500,
+  "source": "ecmwfthin",
+  "units": {
+    "target_lev": "hPa",
+    "longitude": "degrees_east",
+    "latitude": "degrees_north",
+    "length": "degrees",
+    "avg_vorticity": "1e-5 s^-1",
+    "avg_wind_speed": "m/s",
+    "angle": "degrees"
+  },
+  "config": {
+    "interval_dis": 2.0,
+    "length_min": 6,
+    "smoothness": 6,
+    "smooth_method": "bezier",
+    "num_points": 100,
+    "num_control_points": 5
+  },
+  "trough_lines": [
+    {
+      "shear_type": "shear_u_left",
+      "label": "Shear U Left",
+      "points": [
+        {"lat": 31.5, "lon": 108.0}
+      ],
+      "smoothed_points": [
+        {"lat": 31.6, "lon": 108.1}
+      ],
+      "attributes": {
+        "region_box": {
+          "min_lat": 30.0,
+          "max_lat": 35.0,
+          "min_lon": 105.0,
+          "max_lon": 112.0
+        },
+        "length": 8.4,
+        "avg_vorticity": 2.1,
+        "avg_wind_speed": 11.7,
+        "angle": 42.0
+      },
+      "line_id": 1
+    }
+  ]
+}
+```
+
+字段说明：
+- `init_time`：起报时次，格式为 `YYYYMMDDHH`。
+- `fc_hour`：三位预报时效字符串，例如 `000`、`024`、`240`。
+- `target_lev`：气压层，单位为 hPa。
+- `source`：数据源，默认 `ecmwfthin`。
+- `config`：本次槽线识别使用的主要参数。
+- `shear_type`：槽线来源的切变类型，可能值为 `shear_u_left`、`shear_u_right`、`shear_v_up`、`shear_v_down`。
+- `points`：过滤后的原始槽线点，按 `{lat, lon}` 存储。
+- `smoothed_points`：图像中实际绘制的平滑槽线点，按 `{lat, lon}` 存储。
+- `attributes.region_box`：槽线外接经纬度范围。
+- `attributes.length`：槽线长度，当前按经纬度网格距离计算。
+- `attributes.avg_vorticity`：槽线沿线平均涡度，单位见 `units`。
+- `attributes.avg_wind_speed`：槽线沿线平均风速。
+- `attributes.angle`：槽线弯折角度；无法计算时在JSON中为 `null`。
+- `line_id`：当前文件内的槽线序号。
+
 ## 学术背景
 
 本项目基于以下学术研究和技术文档：

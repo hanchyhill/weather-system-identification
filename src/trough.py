@@ -1,3 +1,7 @@
+import json
+from pathlib import Path
+
+import arrow
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
@@ -11,24 +15,206 @@ from scipy.interpolate import splprep, splev
 import scipy.special
 
 
-def load_weather_data(init_time, fc_hour=0, source='ecmwf_fine_his', base_url_template='http://10.148.8.71:7080/thredds/dodsC/{0}/'):
+DEFAULT_SOURCE = 'ecmwfthin'
+ABNORMAL_DATA_THRESHOLD = -999
+TIME_STR_LIST_ECMWFTHIN = [
+    '000', '003', '006', '009', '012', '015', '018', '021', '024',
+    '027', '030', '033', '036', '039', '042', '045', '048', '051',
+    '054', '057', '060', '063', '066', '069', '072', '078', '084',
+    '090', '096', '102', '108', '114', '120', '126', '132', '138',
+    '144', '150', '156', '162', '168', '174', '180', '186', '192',
+    '198', '204', '210', '216', '222', '228', '234', '240',
+]
+TARGET_LEV_LIST = [200, 500, 850, 925, 950] # , 1000]
+TROUGH_CONFIG = {
+    'interval_dis': 2.0,
+    'length_min': 6,
+    'smoothness': 6,
+    'smooth_method': 'bezier',
+    'num_points': 100,
+    'num_control_points': 5,
+    'barb_skip': 8,
+    'figsize': (10, 8),
+    'dpi': 150,
+    'shear_types': {
+        'shear_u_left': {
+            'vorticity_threshold': 1.0,
+            'wind_speed_threshold': 2.0,
+            'angle_threshold': 90,
+            'color': 'blue',
+            'linewidth': 1.0,
+            'label': 'Shear U Left',
+        },
+        'shear_u_right': {
+            'vorticity_threshold': 1.0,
+            'wind_speed_threshold': 2.0,
+            'angle_threshold': 90,
+            'color': 'green',
+            'linewidth': 1.0,
+            'label': 'Shear U Right',
+        },
+        'shear_v_up': {
+            'vorticity_threshold': 1.0,
+            'wind_speed_threshold': 3.0,
+            'angle_threshold': 90,
+            'color': 'red',
+            'linewidth': 1.0,
+            'label': 'Shear V Up',
+        },
+        'shear_v_down': {
+            'vorticity_threshold': 1.0,
+            'wind_speed_threshold': 3.0,
+            'angle_threshold': 90,
+            'color': 'orange',
+            'linewidth': 1.0,
+            'label': 'Shear V Down',
+        },
+    },
+}
+
+
+class WeatherDataError(Exception):
+    """气象数据读取或校验异常。"""
+
+
+class WeatherDataReadError(WeatherDataError):
+    """气象数据读取失败。"""
+
+
+class WeatherDataNotReadyError(WeatherDataError):
+    """气象数据尚未更新或包含异常填充值。"""
+
+
+def calLatestBaseTime() -> str:
+    """
+    计算最新时次起报。
+
+    返回:
+    - baseTime: str, 格式为YYYYMMDDHH
+    """
+    utcnow = arrow.utcnow()
+    hour = utcnow.hour
+    # ECMWF 任务计划: https://confluence.ecmwf.int/display/UDOC/Dissemination+schedule
+    if hour >= 7 and hour < 19:
+        base_time = f"{utcnow.format('YYYYMMDD')}00"
+    elif hour >= 19:
+        base_time = f"{utcnow.format('YYYYMMDD')}12"
+    else:
+        base_time = f"{utcnow.shift(days=-1).format('YYYYMMDD')}12"
+    return base_time
+
+
+def format_fc_hour(fc_hour):
+    """将预报时效统一格式化为三位字符串。"""
+    return str(fc_hour).strip().zfill(3)
+
+
+def _to_data_array(data):
+    if isinstance(data, xr.Dataset):
+        return data[list(data.data_vars)[0]]
+    return data
+
+
+def _to_float(value):
+    if hasattr(value, 'magnitude'):
+        value = value.magnitude
+    if hasattr(value, 'values'):
+        value = value.values
+
+    array_value = np.asarray(value)
+    if array_value.size == 0:
+        return np.nan
+
+    return float(array_value.reshape(-1)[0])
+
+
+def _json_float(value):
+    value = _to_float(value)
+    if not np.isfinite(value):
+        return None
+    return value
+
+
+def _points_to_json(points):
+    points = np.asarray(points)
+    if points.size == 0:
+        return []
+
+    return [
+        {'lat': _json_float(point[0]), 'lon': _json_float(point[1])}
+        for point in points
+    ]
+
+
+def _attributes_to_json(row):
+    region_box = row['region_box']
+    return {
+        'region_box': {
+            'min_lat': _json_float(region_box['min_lat']),
+            'max_lat': _json_float(region_box['max_lat']),
+            'min_lon': _json_float(region_box['min_lon']),
+            'max_lon': _json_float(region_box['max_lon']),
+        },
+        'length': _json_float(row['length']),
+        'avg_vorticity': _json_float(row['avg_vorticity']),
+        'avg_wind_speed': _json_float(row['avg_wind_speed']),
+        'angle': _json_float(row['angle']),
+    }
+
+
+def _min_data_value(data):
+    data_array = _to_data_array(data)
+    values = np.asarray(data_array.values)
+    if values.size == 0 or np.all(np.isnan(values)):
+        return np.nan
+    return float(np.nanmin(values))
+
+
+def validate_weather_data_values(data_dict, threshold=ABNORMAL_DATA_THRESHOLD):
+    """
+    校验读取到的气象要素。任一要素存在小于threshold的值，视为数据未更新。
+    """
+    abnormal_items = []
+    for name, data in data_dict.items():
+        min_value = _min_data_value(data)
+        if np.isfinite(min_value) and min_value < threshold:
+            abnormal_items.append(f'{name} min={min_value}')
+
+    if abnormal_items:
+        raise WeatherDataNotReadyError(
+            'Abnormal weather data detected; data may not be updated yet: '
+            + ', '.join(abnormal_items)
+        )
+
+
+def _read_existing_trough_line_count(json_path):
+    if json_path is None or not json_path.exists():
+        return None
+
+    try:
+        with json_path.open('r', encoding='utf-8') as json_file:
+            trough_data = json.load(json_file)
+        return len(trough_data.get('trough_lines', []))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def load_weather_data(init_time, fc_hour=0, target_lev=500, source=DEFAULT_SOURCE,
+                      base_url_template='http://10.148.8.71:7080/thredds/dodsC/{0}/'):
     """
     加载气象数据
 
     参数:
     - init_time: str, 初始时间,格式为'YYYYMMDDHH'
-    - fc_hour: int, 预报小时,默认为0
-    - source: str, 数据源,默认为'ecmwf_fine_his'
+    - fc_hour: int或str, 预报小时,默认为0
+    - target_lev: int或float, 目标气压层,单位hPa
+    - source: str, 数据源,默认为'ecmwfthin'
     - base_url_template: str, 基础URL模板
 
     返回:
     - data_dict: dict, 包含以下键值对:
         - 'uwnd': 经向风速数据
         - 'vwnd': 纬向风速数据
-        - 'temp': 温度数据
-        - 'hght': 位势高度数据
-        - 'rhum': 相对湿度数据
-        - 'spre': 地面气压数据
         - 'latitude': 纬度数组
         - 'longitude': 经度数组
         - 'grid_unit': 网格单位
@@ -41,47 +227,63 @@ def load_weather_data(init_time, fc_hour=0, source='ecmwf_fine_his', base_url_te
     base_url = base_url_template.format(source)
 
     # 构建URLs
-    url_rhum = base_url + '{0}{1}/rhum.nc'.format(year, month)
+    # url_rhum = base_url + '{0}{1}/rhum.nc'.format(year, month)
     url_vector_x = base_url + '{0}{1}/uwnd.nc'.format(year, month)
     url_vector_y = base_url + '{0}{1}/vwnd.nc'.format(year, month)
-    url_temp = base_url + '{0}{1}/temp.nc'.format(year, month)
-    url_hght = base_url + '{0}{1}/hght.nc'.format(year, month)
-    url_spre = base_url + '{0}{1}/spre.nc'.format(year, month)
+    # url_temp = base_url + '{0}{1}/temp.nc'.format(year, month)
+    # url_hght = base_url + '{0}{1}/hght.nc'.format(year, month)
+    # url_spre = base_url + '{0}{1}/spre.nc'.format(year, month)
 
-    # 打开数据集
-    dataset_rhum = xr.open_dataset(url_rhum)
-    dataset_vec_x = xr.open_dataset(url_vector_x)
-    dataset_vec_y = xr.open_dataset(url_vector_y)
-    dataset_temp = xr.open_dataset(url_temp)
-    dataset_hght = xr.open_dataset(url_hght)
-    dataset_spre = xr.open_dataset(url_spre)
+    try:
+        # 打开数据集
+        # dataset_rhum = xr.open_dataset(url_rhum)
+        dataset_vec_x = xr.open_dataset(url_vector_x)
+        dataset_vec_y = xr.open_dataset(url_vector_y)
+        # dataset_temp = xr.open_dataset(url_temp)
+        # dataset_hght = xr.open_dataset(url_hght)
+        # dataset_spre = xr.open_dataset(url_spre)
 
-    # 构建变量名
-    selected_time = '{0}-{1}-{2} {3}:00:00'.format(year, month, day, hour)
-    fc_str = '{:0>3d}'.format(fc_hour)
-    rhum_var_name = 'rhum{}'.format(fc_str)
-    vector_x_var_name = 'uwnd{}'.format(fc_str)
-    vector_y_var_name = 'vwnd{}'.format(fc_str)
-    temp_var_name = 'temp{}'.format(fc_str)
-    hght_var_name = 'hght{}'.format(fc_str)
-    spre_var_name = 'spre{}'.format(fc_str)
+        # 构建变量名
+        selected_time = '{0}-{1}-{2} {3}:00:00'.format(year, month, day, hour)
+        fc_str = format_fc_hour(fc_hour)
+        # rhum_var_name = 'rhum{}'.format(fc_str)
+        vector_x_var_name = 'uwnd{}'.format(fc_str)
+        vector_y_var_name = 'vwnd{}'.format(fc_str)
+        # temp_var_name = 'temp{}'.format(fc_str)
+        # hght_var_name = 'hght{}'.format(fc_str)
+        # spre_var_name = 'spre{}'.format(fc_str)
 
-    # 提取数据
-    target_lev = 500
-    rhum = dataset_rhum[rhum_var_name].sel(time=selected_time, level=target_lev).to_dataset(name=rhum_var_name)
-    uwnd = dataset_vec_x[vector_x_var_name].sel(time=selected_time, level=target_lev).to_dataset(name=vector_x_var_name)
-    vwnd = dataset_vec_y[vector_y_var_name].sel(time=selected_time, level=target_lev).to_dataset(name=vector_y_var_name)
-    temp = dataset_temp[temp_var_name].sel(time=selected_time, level=target_lev).to_dataset(name=temp_var_name)
-    hght = dataset_hght[hght_var_name].sel(time=selected_time, level=target_lev).to_dataset(name=hght_var_name)
-    spre = dataset_spre[spre_var_name].sel(time=selected_time, level=0.0).to_dataset(name=spre_var_name)
+        # 提取数据
+        # rhum = dataset_rhum[rhum_var_name].sel(time=selected_time, level=target_lev).to_dataset(name=rhum_var_name)
+        uwnd = dataset_vec_x[vector_x_var_name].sel(time=selected_time, level=target_lev).to_dataset(name=vector_x_var_name)
+        vwnd = dataset_vec_y[vector_y_var_name].sel(time=selected_time, level=target_lev).to_dataset(name=vector_y_var_name)
+        # temp = dataset_temp[temp_var_name].sel(time=selected_time, level=target_lev).to_dataset(name=temp_var_name)
+        # hght = dataset_hght[hght_var_name].sel(time=selected_time, level=target_lev).to_dataset(name=hght_var_name)
+        # spre = dataset_spre[spre_var_name].sel(time=selected_time, level=0.0).to_dataset(name=spre_var_name)
 
-    # 解析CF元数据
-    rhum = rhum.metpy.parse_cf(varname=rhum_var_name)
-    uwnd = uwnd.metpy.parse_cf(varname=vector_x_var_name)
-    vwnd = vwnd.metpy.parse_cf(varname=vector_y_var_name)
-    temp = temp.metpy.parse_cf(varname=temp_var_name)
-    hght = hght.metpy.parse_cf(varname=hght_var_name)
-    spre = spre.metpy.parse_cf(varname=spre_var_name)
+        validate_weather_data_values({
+            # 'rhum': rhum,
+            'uwnd': uwnd,
+            'vwnd': vwnd,
+            # 'temp': temp,
+            # 'hght': hght,
+            # 'spre': spre,
+        })
+
+        # 解析CF元数据
+        # rhum = rhum.metpy.parse_cf(varname=rhum_var_name)
+        uwnd = uwnd.metpy.parse_cf(varname=vector_x_var_name)
+        vwnd = vwnd.metpy.parse_cf(varname=vector_y_var_name)
+        # temp = temp.metpy.parse_cf(varname=temp_var_name)
+        # hght = hght.metpy.parse_cf(varname=hght_var_name)
+        # spre = spre.metpy.parse_cf(varname=spre_var_name)
+    except WeatherDataNotReadyError:
+        raise
+    except Exception as exc:
+        raise WeatherDataReadError(
+            f'Failed to read weather data: init_time={init_time}, '
+            f'fc_hour={format_fc_hour(fc_hour)}, target_lev={target_lev}, source={source}'
+        ) from exc
 
     # 提取经纬度信息
     latitude = uwnd.lat
@@ -91,10 +293,10 @@ def load_weather_data(init_time, fc_hour=0, source='ecmwf_fine_his', base_url_te
     return {
         'uwnd': uwnd,
         'vwnd': vwnd,
-        'temp': temp,
-        'hght': hght,
-        'rhum': rhum,
-        'spre': spre,
+        # 'temp': temp,
+        # 'hght': hght,
+        # 'rhum': rhum,
+        # 'spre': spre,
         'latitude': latitude,
         'longitude': longitude,
         'grid_unit': grid_unit
@@ -119,6 +321,9 @@ def calculate_shear_points(uwnd, vwnd, latitude, longitude, grid_unit):
         - 'shear_v_up': uwnd >= 0的v方向切变点
         - 'shear_v_down': uwnd < 0的v方向切变点
     """
+    uwnd = _to_data_array(uwnd)
+    vwnd = _to_data_array(vwnd)
+
     # 1. 通过uwnd计算风速从南到北由正值转变为负值所对应的位置
     sign_change_u = np.diff(np.sign(uwnd), axis=0)
     shear_u_index = np.where(sign_change_u < 0)
@@ -278,8 +483,8 @@ def smooth_lines_bezier(lines, num_points=100, num_control_points=None):
     for line in lines:
         if len(line) > 2:
             if num_control_points is not None and num_control_points < len(line):
-                num_control_points = max(2, num_control_points)
-                indices = np.linspace(0, len(line) - 1, num_control_points, dtype=int)
+                control_point_count = max(2, num_control_points)
+                indices = np.linspace(0, len(line) - 1, control_point_count, dtype=int)
                 control_points = [line[i] for i in indices]
             else:
                 control_points = line
@@ -302,10 +507,8 @@ def add_meteorological_attributes(lines, u10, v10):
     返回:
     - list: 每条槽线和对应的属性
     """
-    if isinstance(u10, xr.Dataset):
-        u10 = u10[list(u10.data_vars)[0]]
-    if isinstance(v10, xr.Dataset):
-        v10 = v10[list(v10.data_vars)[0]]
+    u10 = _to_data_array(u10)
+    v10 = _to_data_array(v10)
 
     if not hasattr(u10.data, 'units'):
         u10 = u10 * units('m/s')
@@ -320,10 +523,10 @@ def add_meteorological_attributes(lines, u10, v10):
         lats, lons = line[:, 0], line[:, 1]
 
         region_box = {
-            "min_lat": lats.min(),
-            "max_lat": lats.max(),
-            "min_lon": lons.min(),
-            "max_lon": lons.max()
+            "min_lat": _to_float(lats.min()),
+            "max_lat": _to_float(lats.max()),
+            "min_lon": _to_float(lons.min()),
+            "max_lon": _to_float(lons.max())
         }
 
         length = np.sum(
@@ -339,7 +542,7 @@ def add_meteorological_attributes(lines, u10, v10):
                 avg_vorticity.append(vort_val.magnitude)
             else:
                 avg_vorticity.append(vort_val.values)
-        avg_vorticity = np.mean(avg_vorticity)
+        avg_vorticity = _to_float(np.mean(avg_vorticity))
 
         avg_wind_speed = []
         for lat, lon in zip(lats, lons):
@@ -352,7 +555,7 @@ def add_meteorological_attributes(lines, u10, v10):
                 u_val = u.values
                 v_val = v.values
             avg_wind_speed.append(np.sqrt(u_val ** 2 + v_val ** 2))
-        avg_wind_speed = np.mean(avg_wind_speed)
+        avg_wind_speed = _to_float(np.mean(avg_wind_speed))
 
         if len(line) >= 3:
             start = line[0]
@@ -373,7 +576,7 @@ def add_meteorological_attributes(lines, u10, v10):
         else:
             angle = np.nan
 
-        angle = np.degrees(angle) if not np.isnan(angle) else angle
+        angle = _to_float(np.degrees(angle)) if not np.isnan(angle) else np.nan
 
         result.append({
             "line": line,
@@ -411,16 +614,24 @@ def convert_to_dataframe(result):
             "angle": item["attributes"]["angle"],
         })
 
-    df = pd.DataFrame(data)
+    columns = [
+        "line_index", "line", "region_box", "length", "avg_vorticity",
+        "avg_wind_speed", "angle",
+    ]
+    df = pd.DataFrame(data, columns=columns)
+    if df.empty:
+        return df
+
     sorted_df = df.sort_values(by="avg_vorticity", ascending=False).reset_index(drop=True)
 
     return sorted_df
 
 
 def process_and_plot_shear_lines(points, uwnd, vwnd, interval_dis, length_min, smoothness,
-                                  vorticity_threshold, wind_speed_threshold,
-                                  angle_threshold, color, linewidth, label, ax,
-                                  smooth_method='spline', num_points=100, num_control_points=None):
+                                 vorticity_threshold, wind_speed_threshold,
+                                 angle_threshold, color, linewidth, label, ax,
+                                 shear_type, smooth_method='spline',
+                                 num_points=100, num_control_points=None):
     """
     处理切变点数据并绘制切变线的通用函数
 
@@ -437,7 +648,8 @@ def process_and_plot_shear_lines(points, uwnd, vwnd, interval_dis, length_min, s
     - color: 绘图颜色
     - linewidth: 线宽
     - label: 图例标签
-    - ax: matplotlib轴对象
+    - ax: matplotlib轴对象或None
+    - shear_type: str, 切变类型
     - smooth_method: str, 平滑方法,可选'spline'或'bezier'
     - num_points: int, 平滑后的点数(用于bezier方法)
     - num_control_points: int或None, 贝塞尔曲线的控制点数量
@@ -445,6 +657,8 @@ def process_and_plot_shear_lines(points, uwnd, vwnd, interval_dis, length_min, s
     lines = form_lines(points, interval_dis, length_min)
     lines_attr = add_meteorological_attributes(lines, uwnd, vwnd)
     df_lines = convert_to_dataframe(lines_attr)
+    if df_lines.empty:
+        return []
 
     filtered_df = df_lines[
         (df_lines['avg_vorticity'] > vorticity_threshold) &
@@ -460,20 +674,71 @@ def process_and_plot_shear_lines(points, uwnd, vwnd, interval_dis, length_min, s
 
     for line in smoothed_lines:
         line = np.array(line)
-        ax.plot(line[:, 1], line[:, 0], marker='o', linewidth=linewidth,
-                markersize=1, color=color, label=label if line is smoothed_lines[0] else '')
+        if ax is not None:
+            ax.plot(line[:, 1], line[:, 0], marker='o', linewidth=linewidth,
+                    markersize=1, color=color,
+                    label=label if line is smoothed_lines[0] else '')
+
+    trough_lines = []
+    for row_idx, (_, row) in enumerate(filtered_df.iterrows()):
+        smoothed_line = smoothed_lines[row_idx] if row_idx < len(smoothed_lines) else []
+        trough_lines.append({
+            'shear_type': shear_type,
+            'label': label,
+            'points': _points_to_json(row['line']),
+            'smoothed_points': _points_to_json(smoothed_line),
+            'attributes': _attributes_to_json(row),
+        })
+
+    return trough_lines
 
 
-def plot_trough_analysis(init_time='2024061412', fc_hour=0):
+def build_trough_json(init_time, fc_hour, target_lev, source, config, trough_lines):
+    """
+    构建单个初始时间、预报时效和层次的槽线JSON结构。
+    """
+    return {
+        'init_time': init_time,
+        'fc_hour': format_fc_hour(fc_hour),
+        'target_lev': target_lev,
+        'source': source,
+        'units': {
+            'target_lev': 'hPa',
+            'longitude': 'degrees_east',
+            'latitude': 'degrees_north',
+            'length': 'degrees',
+            'avg_vorticity': '1e-5 s^-1',
+            'avg_wind_speed': 'm/s',
+            'angle': 'degrees',
+        },
+        'config': config,
+        'trough_lines': trough_lines,
+    }
+
+
+def plot_trough_analysis(init_time=None, fc_hour=0, target_lev=500,
+                         source=DEFAULT_SOURCE, config=TROUGH_CONFIG,
+                         create_plot=True):
     """
     主函数:执行完整的槽线分析和可视化
 
     参数:
-    - init_time: str, 初始时间,格式为'YYYYMMDDHH'
-    - fc_hour: int, 预报小时
+    - init_time: str或None, 初始时间,格式为'YYYYMMDDHH'; 为None时使用最新起报时次
+    - fc_hour: int或str, 预报小时
+    - target_lev: int或float, 目标气压层,单位hPa
+    - source: str, 数据源
+    - config: dict, 槽线识别与绘图配置
+    - create_plot: bool, 是否创建图像
+
+    返回:
+    - fig: matplotlib.figure.Figure或None, 图像句柄
+    - trough_data: dict, JSON可序列化的槽线数据
     """
+    if init_time is None:
+        init_time = calLatestBaseTime()
+
     # 加载数据
-    data = load_weather_data(init_time, fc_hour)
+    data = load_weather_data(init_time, fc_hour, target_lev=target_lev, source=source)
     uwnd = data['uwnd']
     vwnd = data['vwnd']
     latitude = data['latitude']
@@ -482,67 +747,236 @@ def plot_trough_analysis(init_time='2024061412', fc_hour=0):
 
     # 计算切变点
     shear_points = calculate_shear_points(uwnd, vwnd, latitude, longitude, grid_unit)
-    shear_u_left = shear_points['shear_u_left']
-    shear_u_right = shear_points['shear_u_right']
-    shear_v_up = shear_points['shear_v_up']
-    shear_v_down = shear_points['shear_v_down']
+    fig = None
+    ax = None
+    if create_plot:
+        # 创建地图
+        fig = plt.figure(figsize=config['figsize'], dpi=config['dpi'])
+        ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+        ax.set_extent([
+            _to_float(longitude[0]),
+            _to_float(longitude[-1]),
+            _to_float(latitude[0]),
+            _to_float(latitude[-1]),
+        ])
+        ax.add_feature(cfeature.COASTLINE)
+        ax.add_feature(cfeature.BORDERS)
 
-    # 创建地图
-    fig = plt.figure(figsize=(10, 8), dpi=150)
-    ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
-    ax.set_extent([longitude[0], longitude[-1], latitude[0], latitude[-1]])
-    ax.add_feature(cfeature.COASTLINE)
-    ax.add_feature(cfeature.BORDERS)
-
-    # 添加风向杆图
-    skip = 8
-    ax.barbs(longitude[::skip], latitude[::skip], uwnd[::skip, ::skip], vwnd[::skip, ::skip],
-             transform=ccrs.PlateCarree(), length=5,
-             barb_increments={'half': 2, 'full': 4, 'flag': 20}, sizes={'emptybarb': 0})
-
-    # 参数设置
-    interval_dis = 2.0
-    length_min = 6
-    smoothness = 6
-    smooth_method = 'bezier'
-    num_points = 100
-    num_control_points = 5
+        # 添加风向杆图
+        skip = config['barb_skip']
+        ax.barbs(longitude[::skip], latitude[::skip], uwnd[::skip, ::skip], vwnd[::skip, ::skip],
+                 transform=ccrs.PlateCarree(), length=5,
+                 barb_increments={'half': 2, 'full': 4, 'flag': 20}, sizes={'emptybarb': 0})
 
     # 处理并绘制四种切变线
-    process_and_plot_shear_lines(shear_u_left, uwnd, vwnd, interval_dis, length_min, smoothness,
-                                  vorticity_threshold=1.0, wind_speed_threshold=2.0,
-                                  angle_threshold=90, color='blue', linewidth=1.0,
-                                  label='Shear U Left', ax=ax,
-                                  smooth_method=smooth_method, num_points=num_points,
-                                  num_control_points=num_control_points)
+    trough_lines = []
+    for shear_type, shear_config in config['shear_types'].items():
+        trough_lines.extend(
+            process_and_plot_shear_lines(
+                shear_points[shear_type], uwnd, vwnd,
+                config['interval_dis'], config['length_min'], config['smoothness'],
+                vorticity_threshold=shear_config['vorticity_threshold'],
+                wind_speed_threshold=shear_config['wind_speed_threshold'],
+                angle_threshold=shear_config['angle_threshold'],
+                color=shear_config['color'],
+                linewidth=shear_config['linewidth'],
+                label=shear_config['label'],
+                ax=ax,
+                shear_type=shear_type,
+                smooth_method=config['smooth_method'],
+                num_points=config['num_points'],
+                num_control_points=config['num_control_points'],
+            )
+        )
 
-    process_and_plot_shear_lines(shear_u_right, uwnd, vwnd, interval_dis, length_min, smoothness,
-                                  vorticity_threshold=1.0, wind_speed_threshold=2.0,
-                                  angle_threshold=90, color='green', linewidth=1.0,
-                                  label='Shear U Right', ax=ax,
-                                  smooth_method=smooth_method, num_points=num_points,
-                                  num_control_points=num_control_points)
+    for line_id, trough_line in enumerate(trough_lines, start=1):
+        trough_line['line_id'] = line_id
 
-    process_and_plot_shear_lines(shear_v_up, uwnd, vwnd, interval_dis, length_min, smoothness,
-                                  vorticity_threshold=1.0, wind_speed_threshold=3.0,
-                                  angle_threshold=90, color='red', linewidth=1.0,
-                                  label='Shear V Up', ax=ax,
-                                  smooth_method=smooth_method, num_points=num_points,
-                                  num_control_points=num_control_points)
+    if ax is not None:
+        ax.gridlines(draw_labels=True, linewidth=1)
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(handles, labels, loc='upper right')
+        ax.set_title(
+            f'Trough Lines - {init_time} +{format_fc_hour(fc_hour)}h '
+            f'{target_lev}hPa ({config["smooth_method"].capitalize()})',
+            fontsize=16,
+        )
 
-    process_and_plot_shear_lines(shear_v_down, uwnd, vwnd, interval_dis, length_min, smoothness,
-                                  vorticity_threshold=1.0, wind_speed_threshold=3.0,
-                                  angle_threshold=90, color='orange', linewidth=1.0,
-                                  label='Shear V Down', ax=ax,
-                                  smooth_method=smooth_method, num_points=num_points,
-                                  num_control_points=num_control_points)
+    trough_data = build_trough_json(
+        init_time=init_time,
+        fc_hour=fc_hour,
+        target_lev=target_lev,
+        source=source,
+        config=config,
+        trough_lines=trough_lines,
+    )
 
-    ax.gridlines(draw_labels=True, linewidth=1)
-    ax.legend(loc='upper right')
-    plt.title(f'Smoothed Shear Lines (4 Types) - {smooth_method.capitalize()} Method', fontsize=16)
-    plt.show()
+    return fig, trough_data
+
+
+def get_multi_fc_trough_by_init_time(init_time=None, fc_hours=TIME_STR_LIST_ECMWFTHIN,
+                                     target_levs=TARGET_LEV_LIST,
+                                     output_root='./data',
+                                     source=DEFAULT_SOURCE,
+                                     config=TROUGH_CONFIG,
+                                     save_image=True,
+                                     save_json=True,
+                                     show_progress=True):
+    """
+    根据初始时间批量生成多个预报时效和多个层次的槽线图像与JSON数据。
+
+    参数:
+    - init_time: str或None, 初始时间; 为None时使用最新起报时次
+    - save_image: bool, 是否保存PNG图像
+    - save_json: bool, 是否保存JSON槽线数据
+    - show_progress: bool, 是否打印运行进度
+
+    返回:
+    - list: 每个预报时效和层次的输出摘要
+    """
+    if init_time is None:
+        init_time = calLatestBaseTime()
+
+    fc_hours = [format_fc_hour(fc_hour) for fc_hour in fc_hours]
+    total_tasks = len(fc_hours) * len(target_levs)
+    if show_progress:
+        print(
+            f'Start trough analysis: init_time={init_time}, '
+            f'total_tasks={total_tasks}, save_image={save_image}, save_json={save_json}'
+        )
+
+    output_root = Path(output_root)
+    image_dir = output_root / init_time / 'trough_images' if save_image else None
+    data_dir = output_root / init_time / 'trough_data' if save_json else None
+    if image_dir is not None:
+        image_dir.mkdir(parents=True, exist_ok=True)
+    if data_dir is not None:
+        data_dir.mkdir(parents=True, exist_ok=True)
+
+    output_summary = []
+    task_index = 0
+    for fc_str in fc_hours:
+        for target_lev in target_levs:
+            task_index += 1
+            image_path = image_dir / (
+                f'trough_{init_time}_{fc_str}_{target_lev}hPa_ecmwf.png'
+            ) if save_image else None
+            json_path = data_dir / (
+                f'trough_{init_time}_{fc_str}_{target_lev}hPa_ecmwf.json'
+            ) if save_json else None
+            image_exists = image_path is not None and image_path.exists()
+            json_exists = json_path is not None and json_path.exists()
+            requested_outputs_exist = (
+                (not save_image or image_exists) and
+                (not save_json or json_exists)
+            )
+
+            if show_progress:
+                print(
+                    f'[{task_index}/{total_tasks}] Processing '
+                    f'init_time={init_time}, fc_hour={fc_str}, target_lev={target_lev}hPa'
+                )
+
+            if requested_outputs_exist:
+                trough_line_count = _read_existing_trough_line_count(json_path)
+                output_summary.append({
+                    'init_time': init_time,
+                    'fc_hour': fc_str,
+                    'target_lev': target_lev,
+                    'image_path': str(image_path) if image_path is not None else None,
+                    'json_path': str(json_path) if json_path is not None else None,
+                    'trough_line_count': trough_line_count,
+                    'status': 'skipped',
+                    'reason': 'requested output files already exist',
+                })
+                if show_progress:
+                    print(
+                        f'  Skipped existing output: image_exists={image_exists}, '
+                        f'json_exists={json_exists}, trough_lines={trough_line_count}'
+                    )
+                continue
+
+            try:
+                fig, trough_data = plot_trough_analysis(
+                    init_time=init_time,
+                    fc_hour=fc_str,
+                    target_lev=target_lev,
+                    source=source,
+                    config=config,
+                    create_plot=save_image and not image_exists,
+                )
+            except WeatherDataError as exc:
+                message = str(exc)
+                if show_progress:
+                    print(
+                        f'  Abort trough analysis: init_time={init_time}, '
+                        f'fc_hour={fc_str}, target_lev={target_lev}hPa, error={message}'
+                    )
+                output_summary.append({
+                    'init_time': init_time,
+                    'fc_hour': fc_str,
+                    'target_lev': target_lev,
+                    'image_path': None,
+                    'json_path': None,
+                    'trough_line_count': 0,
+                    'status': 'aborted',
+                    'error': message,
+                })
+                return output_summary
+
+            if save_image and not image_exists:
+                fig.savefig(image_path, bbox_inches='tight')
+                plt.close(fig)
+                if show_progress:
+                    print(f'  Saved image: {image_path}')
+            elif save_image and image_exists and show_progress:
+                print(f'  Kept existing image: {image_path}')
+
+            if save_json and not json_exists:
+                with json_path.open('w', encoding='utf-8') as json_file:
+                    json.dump(trough_data, json_file, ensure_ascii=False, indent=2)
+                if show_progress:
+                    print(f'  Saved JSON: {json_path}')
+            elif save_json and json_exists and show_progress:
+                print(f'  Kept existing JSON: {json_path}')
+
+            if fig is not None and (not save_image or image_exists):
+                plt.close(fig)
+
+            output_summary.append({
+                'init_time': init_time,
+                'fc_hour': fc_str,
+                'target_lev': target_lev,
+                'image_path': str(image_path) if image_path is not None else None,
+                'json_path': str(json_path) if json_path is not None else None,
+                'trough_line_count': len(trough_data['trough_lines']),
+                'status': 'completed',
+            })
+
+            if show_progress:
+                print(
+                    f'  Completed init_time={init_time}, fc_hour={fc_str}, '
+                    f'target_lev={target_lev}hPa, '
+                    f'trough_lines={len(trough_data["trough_lines"])}'
+                )
+
+    if show_progress:
+        print(f'Finished trough analysis: init_time={init_time}, total_tasks={total_tasks}')
+    return output_summary
+
+
+def main(init_time=None, save_image=True, save_json=True, show_progress=True):
+    """
+    批量生成槽线结果。init_time为None时默认使用最新ECMWF起报时次。
+    """
+    return get_multi_fc_trough_by_init_time(
+        init_time=init_time,
+        save_image=save_image,
+        save_json=save_json,
+        show_progress=show_progress,
+    )
 
 
 if __name__ == '__main__':
-    # 示例:分析2024年6月14日12时的槽线
-    plot_trough_analysis(init_time='2024061412', fc_hour=0)
+    main()
