@@ -1,0 +1,17 @@
+[project]
+name = "weather-system-identification"
+version = "0.1.0"
+description = "Weather system identification and analysis"
+requires-python = ">=3.10"
+dependencies = [
+    "arrow>=1.4.0",
+    "cartopy>=0.25.0",
+    "matplotlib>=3.10.9",
+    "metpy>=1.7.1",
+    "netcdf4>=1.7.3",
+    "numpy>=2.2.6",
+    "pandas>=2.3.3",
+    "pint>=0.24.4",
+    "scipy>=1.15.3",
+    "xarray>=2025.6.1",
+]

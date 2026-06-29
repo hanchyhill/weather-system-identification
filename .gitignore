@@ -126,3 +126,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# document
+*.pdf
+*.docx
+*.doc
+*.xlsx
+*.pptx
