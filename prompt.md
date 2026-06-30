@@ -280,3 +280,4 @@ plot_lines_with_direction(lines_smooth, uwnd, vwnd, fill=False, same_color=True)
 7. 急流轴实现[pending]。
 8. ecmwf_s2d 数据兼容性方案。
 9. 之前某次海雾个例分析中，有t-td的填色图，需要找到。
+10. SVG瓦片的实现，前后端配合，不同缩放倍数实现加载不同分辨率的瓦片进行拼接展示。参照 H:\github\javascript\nwp_views 中的代码 需要修改的代码 @src\draw\generate_svg_layers.py 和前端代码 @vis_web 

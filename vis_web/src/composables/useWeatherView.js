@@ -25,6 +25,14 @@ const SHEAR_COLORS = {
 const WORLD_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
 const LAYER_COMBINATION_STORAGE_KEY = 'weather-view-layer-combinations'
 const FILL_LAYER_TYPES = new Set(['wind_speed_fill', 'vort_fill', 'rhum_fill', 'surface_speed_fill'])
+const WIND_OVERLAY_LAYER_TYPES = new Set([
+  'wind_quiver',
+  'wind_barb',
+  'wind_streamline',
+  'surface_quiver',
+  'surface_barb',
+  'surface_streamline'
+])
 
 const canvasRef = ref(null)
 const shellRef = ref(null)
@@ -270,6 +278,17 @@ function isFillLayerType(value) {
   return FILL_LAYER_TYPES.has(value) || String(value).endsWith('_fill')
 }
 
+function isFillLayerRecord(type, record) {
+  if (type === 'hght_contour' && String(record?.level) === '500') return true
+  return isFillLayerType(type)
+}
+
+function layerDrawPriority(type) {
+  if (WIND_OVERLAY_LAYER_TYPES.has(type)) return 20
+  if (String(type).includes('contour')) return 10
+  return 15
+}
+
 function isUsableLayerStatus(status) {
   return status === 'generated' || status === 'skipped'
 }
@@ -488,8 +507,14 @@ function drawGraticule(context, projection) {
 function drawWeatherLayers(context, projection, fillLayers) {
   if (!showSvgLayer.value || !activeSvgLayers.value.length) return
 
-  for (const layer of activeSvgLayers.value) {
-    if (layer.isFill !== fillLayers) continue
+  const layers = activeSvgLayers.value
+    .filter((layer) => layer.isFill === fillLayers)
+    .sort((left, right) => {
+      if (fillLayers) return left.order - right.order
+      return layerDrawPriority(left.type) - layerDrawPriority(right.type) || left.order - right.order
+    })
+
+  for (const layer of layers) {
     drawSvgLayer(context, projection, layer)
   }
 }
@@ -869,7 +894,7 @@ async function loadActiveLayer() {
 
   try {
     loadingState.svg = '加载中'
-    const loadedLayers = await Promise.all(loadable.map(loadSvgLayer))
+    const loadedLayers = await Promise.all(loadable.map((item, order) => loadSvgLayer(item, order)))
     activeSvgLayers.value = loadedLayers.filter(Boolean)
     const missingCount = candidates.length - activeSvgLayers.value.length
     loadingState.svg = missingCount
@@ -880,7 +905,7 @@ async function loadActiveLayer() {
   }
 }
 
-async function loadSvgLayer({ type, record }) {
+async function loadSvgLayer({ type, record }, order) {
   const url = layerUrl(record)
   try {
     const cached = await cache.get(url)
@@ -889,7 +914,8 @@ async function loadSvgLayer({ type, record }) {
         type,
         record,
         image: cached,
-        isFill: isFillLayerType(type)
+        isFill: isFillLayerRecord(type, record),
+        order
       }
     }
 
@@ -905,7 +931,8 @@ async function loadSvgLayer({ type, record }) {
       type,
       record,
       image,
-      isFill: isFillLayerType(type)
+      isFill: isFillLayerRecord(type, record),
+      order
     }
   } catch {
     return null
