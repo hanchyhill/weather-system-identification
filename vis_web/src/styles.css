@@ -71,6 +71,86 @@ input {
   align-items: center;
 }
 
+.layer-combo-row {
+  align-items: stretch;
+}
+
+.selection-summary {
+  margin: -2px 0 0;
+  color: #667487;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.layer-popover {
+  display: grid;
+  gap: 12px;
+}
+
+.layer-popover-header {
+  display: grid;
+  gap: 4px;
+}
+
+.layer-popover-header strong {
+  color: #172033;
+  font-size: 13px;
+}
+
+.layer-popover-header span {
+  color: #667487;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.layer-checkbox-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
+}
+
+.save-combo-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 8px;
+  align-items: center;
+}
+
+.saved-combo-list {
+  display: grid;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.saved-combo-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  gap: 6px;
+  align-items: center;
+}
+
+.saved-combo-item > button {
+  min-width: 0;
+  min-height: 28px;
+  border: 1px solid #d5dde7;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #384456;
+  cursor: pointer;
+  overflow: hidden;
+  padding: 0 8px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-combo-item > button:hover {
+  border-color: #9fb0c2;
+  background: #eef3f7;
+}
+
 .two-column {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }

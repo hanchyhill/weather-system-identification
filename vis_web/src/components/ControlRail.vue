@@ -1,9 +1,12 @@
 <script setup>
-import { RefreshCw } from 'lucide-vue-next'
+import { RefreshCw, Save, Settings, Trash2 } from 'lucide-vue-next'
 import {
   NButton,
+  NCheckbox,
+  NCheckboxGroup,
   NInput,
   NInputNumber,
+  NPopover,
   NSelect,
   NSwitch,
   NTag,
@@ -14,14 +17,20 @@ import { useWeatherViewContext } from '../context/weatherViewContext'
 
 const {
   activeSystemTab,
+  activeLayerCombinationName,
+  applyLayerCombination,
+  deleteLayerCombination,
   errorMessage,
   fcHour,
   fcHourOptions,
+  handleLayerTypeChange,
   initTime,
   jetLineWidth,
   jetMinAvgWindSpeed,
   jetMinAxisLength,
   jetMinMaxWindSpeed,
+  layerCombinationName,
+  layerCombinationOptions,
   layerOptions,
   layerStatus,
   layerType,
@@ -31,6 +40,10 @@ const {
   loadingState,
   projectionName,
   projectionOptions,
+  saveLayerCombination,
+  savedLayerCombinations,
+  selectedLayerLabels,
+  selectedLayerTypes,
   SHEAR_COLORS,
   showFutureVortexTracks,
   showJetArrowHeads,
@@ -93,8 +106,67 @@ const {
     </section>
 
     <section class="control-section">
-      <label>图层类型</label>
-      <n-select v-model:value="layerType" size="small" :options="layerOptions" />
+      <label>天气图组合</label>
+      <div class="inline-control layer-combo-row">
+        <n-select
+          :value="layerType"
+          size="small"
+          :options="layerOptions"
+          @update:value="handleLayerTypeChange"
+        />
+        <n-popover trigger="click" placement="right-start" :width="304">
+          <template #trigger>
+            <n-button size="small" secondary circle>
+              <Settings :size="16" />
+            </n-button>
+          </template>
+          <div class="layer-popover">
+            <div class="layer-popover-header">
+              <strong>{{ activeLayerCombinationName }}</strong>
+              <span>{{ selectedLayerLabels }}</span>
+            </div>
+
+            <n-checkbox-group v-model:value="selectedLayerTypes">
+              <div class="layer-checkbox-list">
+                <n-checkbox
+                  v-for="option in layerCombinationOptions"
+                  :key="option.value"
+                  :value="option.value"
+                  :disabled="option.disabled"
+                >
+                  {{ option.label }}
+                </n-checkbox>
+              </div>
+            </n-checkbox-group>
+
+            <div class="save-combo-row">
+              <n-input v-model:value="layerCombinationName" size="small" placeholder="组合名称" />
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  <n-button size="small" secondary circle @click="saveLayerCombination">
+                    <Save :size="15" />
+                  </n-button>
+                </template>
+                保存当前组合
+              </n-tooltip>
+            </div>
+
+            <div v-if="savedLayerCombinations.length" class="saved-combo-list">
+              <div
+                v-for="combo in savedLayerCombinations"
+                :key="combo.name"
+                class="saved-combo-item"
+              >
+                <button type="button" @click="applyLayerCombination(combo)">{{ combo.name }}</button>
+                <n-button size="tiny" tertiary circle @click.stop="deleteLayerCombination(combo.name)">
+                  <Trash2 :size="13" />
+                </n-button>
+              </div>
+            </div>
+          </div>
+        </n-popover>
+      </div>
+      <p class="selection-summary">{{ selectedLayerLabels }}</p>
     </section>
 
     <section class="control-section">

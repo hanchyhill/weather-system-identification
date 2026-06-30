@@ -15,7 +15,7 @@ const DEFAULT_FC_HOURS = [
   '144', '150', '156', '162', '168', '174', '180', '186', '192',
   '198', '204', '210', '216', '222', '228', '234', '240'
 ]
-const DEFAULT_LEVELS = ['200', '500', '850', '925', '950', '1000']
+const DEFAULT_LEVELS = ['200', '500', '700', '850', '925', '950', '1000']
 const SHEAR_COLORS = {
   shear_u_left: '#2563eb',
   shear_u_right: '#16a34a',
@@ -23,6 +23,8 @@ const SHEAR_COLORS = {
   shear_v_down: '#f97316'
 }
 const WORLD_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
+const LAYER_COMBINATION_STORAGE_KEY = 'weather-view-layer-combinations'
+const FILL_LAYER_TYPES = new Set(['wind_speed_fill', 'vort_fill', 'rhum_fill', 'surface_speed_fill'])
 
 const canvasRef = ref(null)
 const shellRef = ref(null)
@@ -35,8 +37,11 @@ const level = ref('500')
 const layerType = ref('wind_speed_fill')
 const manifest = ref(null)
 const worldFeatures = ref(null)
-const activeSvgImage = ref(null)
-const activeLayerRecord = ref(null)
+const activeSvgLayers = ref([])
+const selectedLayerTypes = ref(['wind_speed_fill'])
+const layerCombinationName = ref('风速填色')
+const activeLayerCombinationName = ref('风速填色')
+const savedLayerCombinations = ref(loadSavedLayerCombinations())
 const troughData = ref(null)
 const jetData = ref(null)
 const vortexCenters = ref([])
@@ -115,16 +120,42 @@ const fallbackLayerOptions = [
   { label: '风羽', value: 'wind_barb' },
   { label: '风速填色', value: 'wind_speed_fill' },
   { label: '流线', value: 'wind_streamline' },
+  { label: '气温等值线', value: 'temp_contour' },
+  { label: '相对涡度填色', value: 'vort_fill' },
+  { label: '相对湿度填色', value: 'rhum_fill' },
   { label: '地面风矢量', value: 'surface_quiver' },
   { label: '地面风羽', value: 'surface_barb' },
   { label: '地面风速填色', value: 'surface_speed_fill' },
-  { label: '地面流线', value: 'surface_streamline' }
+  { label: '地面流线', value: 'surface_streamline' },
+  { label: '海平面气压等值线', value: 'mslp_contour' }
 ]
 
-const fcHourOptions = computed(() => {
-  const hours = manifest.value?.fc_hours?.length ? manifest.value.fc_hours : DEFAULT_FC_HOURS
-  return hours.map((value) => ({ label: `+${value} h`, value }))
+const manifestFcHourSet = computed(() => {
+  const manifestHours = manifest.value?.fc_hours
+  if (Array.isArray(manifestHours) && manifestHours.length) {
+    return new Set(manifestHours.map(normalizeFcHour))
+  }
+
+  const productHours = Object.keys(manifest.value?.products || {})
+  if (productHours.length) {
+    return new Set(productHours.map(normalizeFcHour))
+  }
+
+  return null
 })
+
+const firstAvailableFcHour = computed(() => (
+  DEFAULT_FC_HOURS.find((value) => manifestFcHourSet.value?.has(value)) || DEFAULT_FC_HOURS[0]
+))
+
+const fcHourOptions = computed(() => DEFAULT_FC_HOURS.map((value) => {
+  const disabled = Boolean(manifest.value && manifestFcHourSet.value && !manifestFcHourSet.value.has(value))
+  return {
+    label: `+${value} h`,
+    value,
+    disabled
+  }
+}))
 
 const levelOptions = computed(() => {
   const levels = manifest.value?.levels?.length ? manifest.value.levels : DEFAULT_LEVELS
@@ -146,12 +177,30 @@ const layerOptions = computed(() => {
   return types.map((value) => ({ label: labels.get(value) || value, value }))
 })
 
+const layerCombinationOptions = computed(() => layerOptions.value.map((option) => {
+  const record = recordForLayerType(option.value)
+  const disabled = Boolean(manifest.value && !record)
+  return {
+    ...option,
+    disabled
+  }
+}))
+
+const selectedLayerLabels = computed(() => {
+  if (!selectedLayerTypes.value.length) return '未选择'
+  return selectedLayerTypes.value.map(layerLabel).join('、')
+})
+
+const fillLayerCount = computed(() => (
+  activeSvgLayers.value.filter((layer) => layer.isFill).length
+))
+
 const layerStatus = computed(() => {
   if (!manifest.value) return '等待 manifest'
-  if (!activeLayerRecord.value) return '无匹配图层'
-  return activeLayerRecord.value.status === 'generated' || activeLayerRecord.value.status === 'skipped'
-    ? '可用'
-    : activeLayerRecord.value.status
+  if (!selectedLayerTypes.value.length) return '未选择图层'
+  if (!activeSvgLayers.value.length) return '无匹配图层'
+  const failed = activeSvgLayers.value.filter((layer) => !isUsableLayerStatus(layer.record?.status)).length
+  return failed ? `${activeSvgLayers.value.length}层 / ${failed}层不可用` : `${activeSvgLayers.value.length}层可用`
 })
 
 const visibleTroughLines = computed(() => {
@@ -213,14 +262,105 @@ function normalizeFcHour(value) {
   return String(value || '0').padStart(3, '0')
 }
 
+function layerLabel(value) {
+  return fallbackLayerOptions.find((option) => option.value === value)?.label || value
+}
+
+function isFillLayerType(value) {
+  return FILL_LAYER_TYPES.has(value) || String(value).endsWith('_fill')
+}
+
+function isUsableLayerStatus(status) {
+  return status === 'generated' || status === 'skipped'
+}
+
+function sanitizeLayerSelection(values) {
+  const available = new Set(layerOptions.value.map((option) => option.value))
+  const selected = Array.from(new Set((values || []).filter((value) => available.has(value))))
+  return selected.length ? selected : [layerOptions.value[0]?.value || layerType.value].filter(Boolean)
+}
+
+function arraysEqual(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function setSelectedLayerTypes(values) {
+  const next = sanitizeLayerSelection(values)
+  if (!arraysEqual(selectedLayerTypes.value, next)) {
+    selectedLayerTypes.value = next
+  }
+  return next
+}
+
+function loadSavedLayerCombinations() {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = window.localStorage.getItem(LAYER_COMBINATION_STORAGE_KEY)
+    const parsed = JSON.parse(raw || '[]')
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((item) => item?.name && Array.isArray(item.layers))
+      .map((item) => ({
+        name: String(item.name),
+        layers: item.layers.map(String)
+      }))
+  } catch {
+    return []
+  }
+}
+
+function persistLayerCombinations() {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(
+    LAYER_COMBINATION_STORAGE_KEY,
+    JSON.stringify(savedLayerCombinations.value)
+  )
+}
+
 function layerUrl(record) {
   if (!record?.path) return null
   return `/data/products/${initTime.value}/${record.path}`
 }
 
-function currentRecord() {
+function recordForLayerType(targetLayerType) {
   const products = manifest.value?.products
-  return products?.[fcHour.value]?.[level.value]?.[layerType.value] || null
+  return products?.[fcHour.value]?.[level.value]?.[targetLayerType] || null
+}
+
+function saveLayerCombination() {
+  const name = layerCombinationName.value.trim() || activeLayerCombinationName.value.trim()
+  const layers = sanitizeLayerSelection(selectedLayerTypes.value)
+  if (!name || !layers.length) return
+
+  const existingIndex = savedLayerCombinations.value.findIndex((item) => item.name === name)
+  const record = { name, layers }
+  if (existingIndex >= 0) {
+    savedLayerCombinations.value.splice(existingIndex, 1, record)
+  } else {
+    savedLayerCombinations.value.push(record)
+  }
+  activeLayerCombinationName.value = name
+  layerCombinationName.value = name
+  persistLayerCombinations()
+}
+
+function applyLayerCombination(combination) {
+  const next = setSelectedLayerTypes(combination.layers)
+  layerType.value = next[0] || layerType.value
+  activeLayerCombinationName.value = combination.name
+  layerCombinationName.value = combination.name
+}
+
+function deleteLayerCombination(name) {
+  savedLayerCombinations.value = savedLayerCombinations.value.filter((item) => item.name !== name)
+  persistLayerCombinations()
+}
+
+function handleLayerTypeChange(value) {
+  layerType.value = value
+  setSelectedLayerTypes([value])
+  activeLayerCombinationName.value = layerLabel(value)
+  layerCombinationName.value = layerLabel(value)
 }
 
 function buildProjection() {
@@ -304,13 +444,14 @@ function drawMap() {
   context.translate(zoomTransform.value.x, zoomTransform.value.y)
   context.scale(zoomTransform.value.k, zoomTransform.value.k)
 
+  drawWeatherLayers(context, projection, true)
   drawBaseMap(context, path)
-  drawSvgLayer(context, projection)
+  drawGraticule(context, projection)
+  drawWeatherLayers(context, projection, false)
   drawTroughLines(context, projection)
   drawJetAxes(context, projection)
   drawVortexTracks(context, projection)
   drawVortexCenters(context, projection)
-  drawGraticule(context, projection)
 
   context.restore()
   drawHudFrame(context)
@@ -324,16 +465,9 @@ function drawBaseMap(context, path) {
   if (!worldFeatures.value) return
 
   context.beginPath()
-  path({ type: 'Sphere' })
-  context.fillStyle = '#edf6f9'
-  context.fill()
-
-  context.beginPath()
   path(worldFeatures.value)
-  context.fillStyle = '#d9e5de'
-  context.fill()
-  context.strokeStyle = '#53616f'
-  context.lineWidth = 0.65 / zoomTransform.value.k
+  context.strokeStyle = 'rgba(48, 60, 76, 0.78)'
+  context.lineWidth = 0.72 / zoomTransform.value.k
   context.stroke()
 }
 
@@ -351,19 +485,28 @@ function drawGraticule(context, projection) {
   context.setLineDash([])
 }
 
-function drawSvgLayer(context, projection) {
-  if (!showSvgLayer.value || !activeSvgImage.value || !activeLayerRecord.value) return
+function drawWeatherLayers(context, projection, fillLayers) {
+  if (!showSvgLayer.value || !activeSvgLayers.value.length) return
 
-  const bounds = activeLayerRecord.value.bounds
+  for (const layer of activeSvgLayers.value) {
+    if (layer.isFill !== fillLayers) continue
+    drawSvgLayer(context, projection, layer)
+  }
+}
+
+function drawSvgLayer(context, projection, layer) {
+  if (!layer?.image || !layer?.record) return
+
+  const bounds = layer.record.bounds
   const topLeft = projection([bounds.lon_min, bounds.lat_max])
   const bottomRight = projection([bounds.lon_max, bounds.lat_min])
   if (!topLeft || !bottomRight) return
 
-  context.globalAlpha = layerType.value.includes('fill') ? 0.82 : 1
+  context.globalAlpha = layer.isFill && fillLayerCount.value > 1 ? 0.5 : 1
   context.imageSmoothingEnabled = true
   context.imageSmoothingQuality = 'high'
   context.drawImage(
-    activeSvgImage.value,
+    layer.image,
     topLeft[0],
     topLeft[1],
     bottomRight[0] - topLeft[0],
@@ -681,20 +824,21 @@ async function loadWorld() {
 async function loadManifest() {
   errorMessage.value = ''
   manifest.value = null
-  activeLayerRecord.value = null
-  activeSvgImage.value = null
+  activeSvgLayers.value = []
   loadingState.manifest = '加载中'
 
   try {
     manifest.value = await fetchJson(`/data/products/${initTime.value}/manifest.json`)
     loadingState.manifest = '完成'
-    const firstFc = manifest.value.fc_hours?.[0]
     const firstLevel = manifest.value.levels?.find((item) => item !== 'surface') || manifest.value.levels?.[0]
-    if (firstFc) fcHour.value = firstFc
+    if (manifestFcHourSet.value && !manifestFcHourSet.value.has(fcHour.value)) {
+      fcHour.value = firstAvailableFcHour.value
+    }
     if (firstLevel) level.value = String(firstLevel)
     if (!layerOptions.value.some((item) => item.value === layerType.value)) {
       layerType.value = layerOptions.value[0]?.value || layerType.value
     }
+    setSelectedLayerTypes(selectedLayerTypes.value)
   } catch (error) {
     loadingState.manifest = '未找到'
     errorMessage.value = `未找到 /data/products/${initTime.value}/manifest.json；仍可查看槽线 JSON。`
@@ -709,11 +853,15 @@ async function loadManifest() {
 }
 
 async function loadActiveLayer() {
-  activeLayerRecord.value = currentRecord()
-  activeSvgImage.value = null
+  activeSvgLayers.value = []
+  setSelectedLayerTypes(selectedLayerTypes.value)
+  const candidates = selectedLayerTypes.value.map((type) => ({
+    type,
+    record: recordForLayerType(type)
+  }))
+  const loadable = candidates.filter((item) => layerUrl(item.record))
 
-  const url = layerUrl(activeLayerRecord.value)
-  if (!url) {
+  if (!loadable.length) {
     loadingState.svg = '无匹配图层'
     requestDraw()
     return
@@ -721,12 +869,28 @@ async function loadActiveLayer() {
 
   try {
     loadingState.svg = '加载中'
+    const loadedLayers = await Promise.all(loadable.map(loadSvgLayer))
+    activeSvgLayers.value = loadedLayers.filter(Boolean)
+    const missingCount = candidates.length - activeSvgLayers.value.length
+    loadingState.svg = missingCount
+      ? `${activeSvgLayers.value.length}层完成 / ${missingCount}层缺失`
+      : `${activeSvgLayers.value.length}层完成`
+  } finally {
+    requestDraw()
+  }
+}
+
+async function loadSvgLayer({ type, record }) {
+  const url = layerUrl(record)
+  try {
     const cached = await cache.get(url)
     if (cached) {
-      activeSvgImage.value = cached
-      loadingState.svg = '缓存命中'
-      requestDraw()
-      return
+      return {
+        type,
+        record,
+        image: cached,
+        isFill: isFillLayerType(type)
+      }
     }
 
     const image = new Image()
@@ -736,13 +900,15 @@ async function loadActiveLayer() {
       image.onerror = reject
       image.src = url
     })
-    activeSvgImage.value = image
     await cache.set(url, image)
-    loadingState.svg = '完成'
+    return {
+      type,
+      record,
+      image,
+      isFill: isFillLayerType(type)
+    }
   } catch {
-    loadingState.svg = '缺失或加载失败'
-  } finally {
-    requestDraw()
+    return null
   }
 }
 
@@ -888,6 +1054,7 @@ const context = {
   formatNumber,
   handleMouseLeave,
   handleMouseMove,
+  handleLayerTypeChange,
   hoverJetLine,
   hoverLine,
   hoverVortexCenter,
@@ -897,7 +1064,12 @@ const context = {
   jetMinAvgWindSpeed,
   jetMinAxisLength,
   jetMinMaxWindSpeed,
+  activeLayerCombinationName,
+  applyLayerCombination,
+  deleteLayerCombination,
   layerOptions,
+  layerCombinationName,
+  layerCombinationOptions,
   layerStatus,
   layerType,
   level,
@@ -908,6 +1080,10 @@ const context = {
   projectionName,
   projectionOptions,
   resetView,
+  saveLayerCombination,
+  savedLayerCombinations,
+  selectedLayerLabels,
+  selectedLayerTypes,
   SHEAR_COLORS,
   shellRef,
   showFutureVortexTracks,
@@ -938,12 +1114,16 @@ const context = {
   errorMessage
 }
 
-watch([fcHour, level, layerType], async () => {
+watch([fcHour, level], async () => {
   await loadActiveLayer()
   await loadTrough()
   await loadJetAxes()
   await loadVortexCenters()
 })
+
+watch(selectedLayerTypes, async () => {
+  await loadActiveLayer()
+}, { deep: true })
 
 watch([
   showSvgLayer,
