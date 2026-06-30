@@ -35,3 +35,120 @@ def calLatestBaseTime() -> str:
     return baseTime
 
 2. 添加只绘图或者只输出json文件的参数。
+
+
+### 涡旋
+目标：实现涡旋中心识别，暖心识别，涡旋追踪三个脚本。
+参照目录 @ifs 中的文件，实现涡旋中心识别和追踪算法。修改如下：1. 先进行中心识别的图像绘制和数据输出，数据读取参照 trough.md 当中的内容。 涡旋识别的层次分别为 ，200hpa,500hpa,700hpa,850hpa,925hpa,950hpa 的。 以及地面u10m, v10m.
+中心识别后，再进行暖心识别和涡旋追踪，以850hpa中心和地面u10m,v10m为追踪目标。中心追踪前，参考模式的可预报时效，保证所有预报时效都有数据后才开始追踪，注意预报时效间隔会变化，注意这方面的算法适配。
+中心识别，暖心识别，和涡旋追踪，分开为三个独立脚本。
+
+@ifs 目录中的各个文件：
+01_ifs_glob_file_to_json.py（这个不需要）
+扫描 IFS 的 u850/v850/10u/10v GRIB2 文件，按起报时间和预报时效配对，生成 ifs_uv850_wind_file_info_list.json。支持增量模式，默认跳过 06/18 起报，只处理 00/12。
+
+02_ifs_json2sqlite.py（这个不需要）
+把阶段 1 的 JSON 文件清单导入 SQLite：ifs_uv850_wind_data.db。核心作用是任务状态管理，记录每个风场文件是否已处理、失败原因、输出 JSON 路径等。
+
+03_ifs_tc_locator_aifs_850fit_optimized.py（核心算法）
+核心 TC 定位脚本。读取数据库中待处理的风场文件，加载 850hPa 风场和可选地面 10m 风场，通过风切变点、KDTree、DBSCAN、涡度阈值识别热带气旋中心，再用地面风场校正中心并计算最大风速。输出单时次 TC 定位 JSON。
+
+04_delete_error_file_in_db.py（这个不需要）
+数据清理工具。读取 SQLite 中 message 不为空的异常记录，从错误信息里解析文件路径并尝试删除异常文件，同时生成 delete_error_files_log_ifs.json 删除日志。
+
+05_ifs_cal_warm_core_850.py（核心算法）
+暖心识别脚本。读取阶段 3 的 TC 定位结果，再加载 IFS 的 t200/t300/t400/t500 温度场，计算平均温度场。判断两个条件：中心附近 5 度范围最大温度点是否距中心小于 220km，以及中心温度是否高于东西南北 8 度处温度。满足则标记 warm=True，输出带暖心字段的 TC JSON。
+
+06_ifs_tc_tracker_warm_core_850.py（核心算法）
+轨迹追踪脚本。读取带暖心标记的逐时次 TC 定位结果，把离散点连接成轨迹。追踪策略分三段：第一点用最近距离，第二点用前向移速预测，第三点以后用中央差预测；并限制跳跃距离。输出 tc_tracking_results_processed_YYYYMMDDHH.json，可选生成暖心轨迹图。
+
+07_ifs_filter_warm_json.py（核心算法）
+暖心轨迹过滤脚本。读取完整追踪结果，只保留 warm is True 的轨迹，并删除轨迹点中的 sectorList、bound 等冗余字段，写入 ifs_tc_track_warmcore_850hPa_mix_surface_onlywarm，供后续匹配使用。
+
+08_ifs_same_tc_fit.py（这个不需要）
+IFS 与 BST 最佳路径匹配脚本。读取暖心 IFS 轨迹和 CH2024BST.json，对每个 BST 台风在其生命周期前 15 天到结束时间内搜索 IFS 起报轨迹。匹配逻辑包括时间交集、Haversine 距离阈值、移向相似度、循环移位置换显著性检验、距离趋势过滤、最佳候选选择，并输出匹配 JSON、日志和可视化图。
+
+
+u10m 和 v10m 的变量为地面要素，不包含层次信息。
+'u10m':{
+        'name':'u10m',
+        'missing_value': -999.9,
+        '_FillValue':  -999.9,
+        'valid_min': -999.0,
+        'standard_name': 'eastward_wind',
+        'units': 'm/s',
+        'long_name': 'u wind',
+        'short_name': 'Uwnd',
+    },
+    'v10m':{
+        'name':'v10m',
+        'missing_value': -999.9,
+        '_FillValue':  -999.9,
+        'valid_min': -999.0,
+        'standard_name': 'northward_wind',
+        'units': 'm/s',
+        'long_name': 'v wind',
+        'short_name': 'Vwnd',
+    }
+读取方式类似如下，注意兼容现有的写法。
+def readFromTDS(initTime: str = '2022031700', modelId: str = 'ecmwfthin', area: list = [105, 125, 15, 28]) -> dict:
+    '''
+    从TDS接口读取指定起报时间数据, 返回dataset
+    :params initTime: 起报时间世界时YYYYMMDDHH
+    :params modelId: 模式名
+    :params area: 筛选区域[西, 东, 南, 北]
+    :return dataset字典
+    '''
+    year = initTime[0:4]
+    month = initTime[4:6]
+    day = initTime[6:8]
+    hour = initTime[8:10]
+    selectedTime = '{0}-{1}-{2} {3}:00:00'.format(year, month, day, hour)
+    baseUrl = 'http://10.148.8.71:7080/thredds/dodsC/{0}/'.format(modelId)
+    url_td = baseUrl + f'{year}{month}/t2md.nc'
+    url_t2m = baseUrl + f'{year}{month}/t2mm.nc'
+    url_sst = baseUrl + f'{year}{month}/sstk.nc'
+    url_u10m = baseUrl + f'{year}{month}/u10m.nc'
+    url_v10m = baseUrl + f'{year}{month}/v10m.nc'
+    try:
+        dataSet_td = xr.open_dataset(url_td)
+        dataSet_t2m = xr.open_dataset(url_t2m)
+        dataSet_sst = xr.open_dataset(url_sst)
+        dataSet_u10m = xr.open_dataset(url_u10m)
+        dataSet_v10m = xr.open_dataset(url_v10m)
+    except Exception as e:
+        print('无法获取数据源')
+        raise e
+    # 根据模式选择合适的切片方向
+    if modelId == 'ecmwf_s2d':
+        # s2d 数据使用降序切片
+        lat_slice = slice(area[3], area[2])  # slice(28, 15) 北→南
+    else:
+        # ecmwfthin 数据使用升序切片
+        lat_slice = slice(area[2], area[3])  # slice(15, 28) 南→北
+
+    lon_slice = slice(area[0], area[1])
+
+    ds_td = dataSet_td.sel(time=selectedTime, level=0.0, lat=lat_slice, lon=lon_slice)
+    ds_t2m = dataSet_t2m.sel(time=selectedTime, level=0.0, lat=lat_slice, lon=lon_slice)
+    ds_sst = dataSet_sst.sel(time=selectedTime, level=0.0, lat=lat_slice, lon=lon_slice)
+    ds_u10m = dataSet_u10m.sel(time=selectedTime, level=0.0, lat=lat_slice, lon=lon_slice)
+    ds_v10m = dataSet_v10m.sel(time=selectedTime, level=0.0, lat=lat_slice, lon=lon_slice)
+
+    # 统一排序：确保 lat 维度都是升序（南→北），增强兼容性
+    ds_td = ds_td.sortby('lat')
+    ds_t2m = ds_t2m.sortby('lat')
+    ds_sst = ds_sst.sortby('lat')
+    ds_u10m = ds_u10m.sortby('lat')
+    ds_v10m = ds_v10m.sortby('lat')
+
+    return {'td': ds_td, 't2m': ds_t2m, 'sst': ds_sst, 'u10m': ds_u10m, 'v10m': ds_v10m}
+
+## TODO
+
+1. 涡旋中心算法实装。
+2. 涡旋追踪算法实装。
+3. 锋面识别算法探究。
+4. 副热带高压脊线识别(上边界，下边界)。
+5. web交互实装。
+6. 常用气象图的SVG导出。
