@@ -144,11 +144,27 @@ def readFromTDS(initTime: str = '2022031700', modelId: str = 'ecmwfthin', area: 
 
     return {'td': ds_td, 't2m': ds_t2m, 'sst': ds_sst, 'u10m': ds_u10m, 'v10m': ds_v10m}
 
+### web交互和使用python生成对应的SVG平面图。
+
+参照 H:\github\javascript\nwp_views 中的代码，实现web交互和使用python生成对应的SVG平面图。
+前端交互界面放在目录 @vis_web 中。
+python 生成 SVG图像的脚本放在 @src\draw\ 目录中。
+前端使用pnpm 安装和管理依赖，安装最新的库即可。
+python使用 uv ，与本项目现有依赖共用，缺少的库自行使用uv安装。
+python需要绘制的图有：
+1. 200hPa, 500hPa, 850hPa, 925hPa, 950hPa 的位势高度(等值线)，风场(箭头)、风场(风向杆)、、风场(风速填色)、风场(流线)
+2. 地面风场：u10m, v10m 的箭头，风向杆，风速填色，流线。
+3. 新增在前端交互界面中，实现槽线数据的绘制功能。
+4. 前端交互中，增加预报时次切换等功能。
+
+- TODO  等人工确认：绘图细节，比如风向杆设置，风速填色设置，位势高度(等值线)设置等。
+
+
 ## TODO
 
-1. 涡旋中心算法实装。
-2. 涡旋追踪算法实装。
-3. 锋面识别算法探究。
-4. 副热带高压脊线识别(上边界，下边界)。
-5. web交互实装。
-6. 常用气象图的SVG导出。
+1. 涡旋中心算法实装[in progress]。
+2. 涡旋追踪算法实装[in progress]。
+3. 锋面识别算法探究[pending]。
+4. 副热带高压脊线识别(上边界，下边界)[pending]。
+5. web交互实装[pending]。
+6. 常用气象图的SVG导出[pending]。
