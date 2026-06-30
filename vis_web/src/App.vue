@@ -43,10 +43,12 @@ const worldFeatures = ref(null)
 const activeSvgImage = ref(null)
 const activeLayerRecord = ref(null)
 const troughData = ref(null)
+const jetData = ref(null)
 const vortexCenters = ref([])
 const vortexTracks = ref(null)
 const showSvgLayer = ref(true)
 const showTrough = ref(true)
+const showJetAxes = ref(true)
 const showRawPoints = ref(false)
 const showVortexCenters = ref(true)
 const showVortexTracks = ref(true)
@@ -56,6 +58,7 @@ const loadingState = reactive({
   manifest: '未加载',
   svg: '未加载',
   trough: '未加载',
+  jet: '未加载',
   vortexCenters: '未加载',
   vortexTracks: '未加载',
   map: '未加载'
@@ -63,6 +66,7 @@ const loadingState = reactive({
 const errorMessage = ref('')
 const mouseGeo = ref(null)
 const hoverLine = ref(null)
+const hoverJetLine = ref(null)
 const hoverVortexCenter = ref(null)
 const hoverVortexTrack = ref(null)
 const cache = new SvgImageCache()
@@ -123,6 +127,7 @@ const layerStatus = computed(() => {
 })
 
 const visibleTroughCount = computed(() => troughData.value?.trough_lines?.length || 0)
+const visibleJetAxisCount = computed(() => jetData.value?.jet_axis_lines?.length || 0)
 const visibleVortexCenterCount = computed(() => vortexCenters.value?.length || 0)
 const visibleVortexTrackCount = computed(() => {
   if (String(level.value) !== '850') return 0
@@ -232,6 +237,7 @@ function drawMap() {
   drawBaseMap(context, path)
   drawSvgLayer(context, projection)
   drawTroughLines(context, projection)
+  drawJetAxes(context, projection)
   drawVortexTracks(context, projection)
   drawVortexCenters(context, projection)
   drawGraticule(context, projection)
@@ -329,6 +335,111 @@ function drawTroughLines(context, projection) {
   }
 }
 
+function drawJetAxes(context, projection) {
+  if (!showJetAxes.value || !jetData.value?.jet_axis_lines?.length) return
+
+  for (const line of jetData.value.jet_axis_lines) {
+    const points = line.smoothed_points?.length ? line.smoothed_points : line.points
+    if (!points?.length) continue
+
+    const projectedPoints = points
+      .map((point) => projection([point.lon, point.lat]))
+      .filter((point) => point && Number.isFinite(point[0]) && Number.isFinite(point[1]))
+
+    if (projectedPoints.length < 2) continue
+
+    context.save()
+    context.beginPath()
+    projectedPoints.forEach((point, index) => {
+      if (index === 0) context.moveTo(point[0], point[1])
+      else context.lineTo(point[0], point[1])
+    })
+    context.strokeStyle = '#e11d48'
+    context.lineWidth = 2.2 / zoomTransform.value.k
+    context.lineCap = 'round'
+    context.lineJoin = 'round'
+    context.stroke()
+
+    drawJetArrowHead(context, projectedPoints)
+    context.restore()
+  }
+}
+
+function drawJetArrowHead(context, projectedPoints) {
+  const arrow = jetArrowGeometry(projectedPoints)
+  if (!arrow) return
+
+  const { point: baseCenter, angle } = arrow
+  const length = 24 / zoomTransform.value.k
+  const halfWidth = 5 / zoomTransform.value.k
+  const tip = [
+    baseCenter[0] + length * Math.cos(angle),
+    baseCenter[1] + length * Math.sin(angle)
+  ]
+  const normal = angle + Math.PI / 2
+
+  context.fillStyle = '#e11d48'
+  context.beginPath()
+  context.moveTo(tip[0], tip[1])
+  context.lineTo(
+    baseCenter[0] + halfWidth * Math.cos(normal),
+    baseCenter[1] + halfWidth * Math.sin(normal)
+  )
+  context.lineTo(
+    baseCenter[0] - halfWidth * Math.cos(normal),
+    baseCenter[1] - halfWidth * Math.sin(normal)
+  )
+  context.closePath()
+  context.fill()
+}
+
+function jetArrowGeometry(projectedPoints) {
+  if (projectedPoints.length < 2) return null
+
+  const lengths = []
+  let totalLength = 0
+  for (let index = 1; index < projectedPoints.length; index += 1) {
+    const previous = projectedPoints[index - 1]
+    const current = projectedPoints[index]
+    const length = Math.hypot(current[0] - previous[0], current[1] - previous[1])
+    lengths.push(length)
+    totalLength += length
+  }
+  if (totalLength <= 0) return null
+
+  const targetLength = totalLength * 0.75
+  let traveled = 0
+  let arrowPoint = projectedPoints[projectedPoints.length - 2]
+  let segmentStart = projectedPoints[projectedPoints.length - 2]
+  let segmentEnd = projectedPoints[projectedPoints.length - 1]
+
+  for (let index = 1; index < projectedPoints.length; index += 1) {
+    const length = lengths[index - 1]
+    if (traveled + length >= targetLength) {
+      segmentStart = projectedPoints[index - 1]
+      segmentEnd = projectedPoints[index]
+      const ratio = length > 0 ? (targetLength - traveled) / length : 0
+      arrowPoint = [
+        segmentStart[0] + (segmentEnd[0] - segmentStart[0]) * ratio,
+        segmentStart[1] + (segmentEnd[1] - segmentStart[1]) * ratio
+      ]
+      break
+    }
+    traveled += length
+  }
+
+  const end = projectedPoints[projectedPoints.length - 1]
+  const angle = Math.atan2(end[1] - arrowPoint[1], end[0] - arrowPoint[0])
+  if (!Number.isFinite(angle)) {
+    return {
+      point: arrowPoint,
+      angle: Math.atan2(segmentEnd[1] - segmentStart[1], segmentEnd[0] - segmentStart[0])
+    }
+  }
+
+  return { point: arrowPoint, angle }
+}
+
 function drawVortexTracks(context, projection) {
   if (String(level.value) !== '850' || !showVortexTracks.value || !vortexTracks.value?.tracks?.length) return
 
@@ -400,6 +511,28 @@ function findNearestLine(mouse) {
   let nearestDistance = Infinity
 
   for (const line of troughData.value.trough_lines) {
+    const points = line.smoothed_points?.length ? line.smoothed_points : line.points
+    for (const point of points || []) {
+      const screen = transformedPoint(projection, [point.lon, point.lat])
+      if (!screen) continue
+      const distance = Math.hypot(screen[0] - mouse.x, screen[1] - mouse.y)
+      if (distance < nearestDistance) {
+        nearestDistance = distance
+        nearest = line
+      }
+    }
+  }
+
+  return nearestDistance <= 12 ? nearest : null
+}
+
+function findNearestJetLine(mouse) {
+  if (!showTooltip.value || !showJetAxes.value || !jetData.value?.jet_axis_lines?.length || !mouse) return null
+  const projection = buildProjection()
+  let nearest = null
+  let nearestDistance = Infinity
+
+  for (const line of jetData.value.jet_axis_lines) {
     const points = line.smoothed_points?.length ? line.smoothed_points : line.points
     for (const point of points || []) {
       const screen = transformedPoint(projection, [point.lon, point.lat])
@@ -498,6 +631,7 @@ async function loadManifest() {
   } finally {
     await loadActiveLayer()
     await loadTrough()
+    await loadJetAxes()
     await loadVortexCenters()
     await loadVortexTracks()
     requestDraw()
@@ -558,6 +692,27 @@ async function loadTrough() {
     loadingState.trough = '完成'
   } catch {
     loadingState.trough = '缺失'
+  } finally {
+    requestDraw()
+  }
+}
+
+async function loadJetAxes() {
+  jetData.value = null
+  hoverJetLine.value = null
+  if (level.value === 'surface') {
+    loadingState.jet = '地面层无急流轴'
+    requestDraw()
+    return
+  }
+
+  const url = `/data/${initTime.value}/jet_data/jet_${initTime.value}_${fcHour.value}_${level.value}hPa_ecmwf.json`
+  try {
+    loadingState.jet = '加载中'
+    jetData.value = await fetchJson(url)
+    loadingState.jet = '完成'
+  } catch {
+    loadingState.jet = '缺失'
   } finally {
     requestDraw()
   }
@@ -630,12 +785,14 @@ function handleMouseMove(event) {
   mouseGeo.value = screenToGeo(event)
   hoverVortexCenter.value = findNearestVortexCenter(mouseGeo.value)
   hoverVortexTrack.value = hoverVortexCenter.value ? null : findNearestVortexTrack(mouseGeo.value)
-  hoverLine.value = hoverVortexCenter.value || hoverVortexTrack.value ? null : findNearestLine(mouseGeo.value)
+  hoverJetLine.value = hoverVortexCenter.value || hoverVortexTrack.value ? null : findNearestJetLine(mouseGeo.value)
+  hoverLine.value = hoverVortexCenter.value || hoverVortexTrack.value || hoverJetLine.value ? null : findNearestLine(mouseGeo.value)
 }
 
 function handleMouseLeave() {
   mouseGeo.value = null
   hoverLine.value = null
+  hoverJetLine.value = null
   hoverVortexCenter.value = null
   hoverVortexTrack.value = null
 }
@@ -652,10 +809,11 @@ function resizeCanvas() {
 watch([fcHour, level, layerType], async () => {
   await loadActiveLayer()
   await loadTrough()
+  await loadJetAxes()
   await loadVortexCenters()
 })
 
-watch([showSvgLayer, showTrough, showRawPoints, showVortexCenters, showVortexTracks, showWarmOnlyTracks, projectionName], () => {
+watch([showSvgLayer, showTrough, showJetAxes, showRawPoints, showVortexCenters, showVortexTracks, showWarmOnlyTracks, projectionName], () => {
   requestDraw()
 })
 
@@ -739,6 +897,7 @@ onUnmounted(() => {
         <section class="switch-list">
           <label><span>SVG 图层</span><n-switch v-model:value="showSvgLayer" size="small" /></label>
           <label><span>槽线</span><n-switch v-model:value="showTrough" size="small" /></label>
+          <label><span>急流轴</span><n-switch v-model:value="showJetAxes" size="small" /></label>
           <label><span>涡旋中心 L</span><n-switch v-model:value="showVortexCenters" size="small" /></label>
           <label>
             <span>850hPa 轨迹</span>
@@ -757,10 +916,12 @@ onUnmounted(() => {
           <div><span>Manifest</span><n-tag size="small" :bordered="false">{{ loadingState.manifest }}</n-tag></div>
           <div><span>SVG</span><n-tag size="small" :bordered="false">{{ loadingState.svg }}</n-tag></div>
           <div><span>槽线</span><n-tag size="small" :bordered="false">{{ loadingState.trough }}</n-tag></div>
+          <div><span>急流轴</span><n-tag size="small" :bordered="false">{{ loadingState.jet }}</n-tag></div>
           <div><span>涡旋中心</span><n-tag size="small" :bordered="false">{{ loadingState.vortexCenters }}</n-tag></div>
           <div><span>涡旋轨迹</span><n-tag size="small" :bordered="false">{{ level === '850' ? loadingState.vortexTracks : '仅850hPa显示' }}</n-tag></div>
           <div><span>图层状态</span><n-tag size="small" :bordered="false">{{ layerStatus }}</n-tag></div>
           <div><span>槽线数量</span><strong>{{ visibleTroughCount }}</strong></div>
+          <div><span>急流轴数量</span><strong>{{ visibleJetAxisCount }}</strong></div>
           <div><span>中心数量</span><strong>{{ visibleVortexCenterCount }}</strong></div>
           <div><span>轨迹数量</span><strong>{{ visibleVortexTrackCount }}</strong></div>
         </section>
@@ -815,6 +976,14 @@ onUnmounted(() => {
             <span>{{ formatNumber(hoverVortexTrack.point.lon, 2) }}E, {{ formatNumber(hoverVortexTrack.point.lat, 2) }}N</span>
             <span>最大风 {{ formatNumber(hoverVortexTrack.track.max_wind, 1) }} m/s</span>
             <span>暖心轨迹: {{ hoverVortexTrack.track.warm ? '是' : '否' }}</span>
+          </div>
+
+          <div v-else-if="hoverJetLine" class="line-tooltip">
+            <strong>急流轴 {{ hoverJetLine.line_id }}</strong>
+            <span>{{ level }} hPa +{{ fcHour }} h</span>
+            <span>长度 {{ formatNumber(hoverJetLine.attributes?.length, 2) }}</span>
+            <span>平均风速 {{ formatNumber(hoverJetLine.attributes?.avg_wind_speed, 1) }} m/s</span>
+            <span>最大风速 {{ formatNumber(hoverJetLine.attributes?.max_wind_speed, 1) }} m/s</span>
           </div>
 
           <div v-else-if="hoverLine" class="line-tooltip">

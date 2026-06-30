@@ -171,6 +171,8 @@ plot_lines_with_direction(lines_smooth, uwnd, vwnd, fill=False, same_color=True)
 整体代码风格参考  @src\trough.py 中的代码，主要是把原本的槽线算法改为实现急流轴数据的生成和绘制。
 与trough.py 共用的函数，可以抽离出来，作为公共函数库。
 
+### 涡旋识别算法中，有新的涡旋中心定位数据时，再更新涡旋追踪数据。
+
 ## TODO
 
 1. 涡旋中心算法实装[success]。

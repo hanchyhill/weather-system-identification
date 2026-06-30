@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-本项目致力于天气系统的自动识别和分析，特别专注于热带气旋（台风）的追踪和槽线系统的检测。项目基于ECMWF（欧洲中期天气预报中心）的高质量气象数据，使用先进的数值分析方法进行天气系统识别。
+本项目致力于天气系统的自动识别和分析，特别专注于热带气旋（台风）的追踪、槽线系统和急流轴的检测。项目基于ECMWF（欧洲中期天气预报中心）的高质量气象数据，使用先进的数值分析方法进行天气系统识别。
 
 ## 主要功能
 
@@ -31,6 +31,16 @@
   - 对850hPa中心使用10m风场进行地面中心校正，并计算100km内最大地面风速
   - 基于200、300、400、500hPa平均温度场识别暖心结构
   - 将逐时效暖心涡旋中心追踪为连续轨迹
+
+### 4. 急流轴识别 (Jet Axis Identification)
+- **文件位置**:
+  - `src/jet.py`
+  - `src/jet_v2.ipynb`
+- **功能描述**:
+  - 对风场进行高斯平滑并计算风速
+  - 沿风场垂直方向计算风速平流
+  - 基于风速阈值和平流符号变化提取急流轴点
+  - 支持按起报时次、预报时效和气压层批量输出PNG图像与JSON数据
 
 ## 技术特点
 
@@ -61,6 +71,9 @@ weather-system-identification/
 ├── src/
 │   ├── trough.py                 # 槽线检测可复用函数
 │   ├── trough.ipynb              # 槽线检测Notebook
+│   ├── weather_common.py         # 槽线与急流轴算法通用工具
+│   ├── jet.py                    # 急流轴识别脚本
+│   ├── jet_v2.ipynb              # 急流轴识别Notebook
 │   ├── vortex_common.py          # 涡旋算法通用工具
 │   ├── vortex_center.py          # 涡旋中心识别脚本
 │   ├── vortex_warm_core.py       # 暖心识别脚本
@@ -115,6 +128,18 @@ uv sync
    uv run python src/vortex_center.py --init-time 2026062900 --save-json
    uv run python src/vortex_warm_core.py --init-time 2026062900
    uv run python src/vortex_tracker.py --init-time 2026062900
+   ```
+
+5. 运行急流轴识别脚本：
+   ```bash
+   # 处理指定起报时次的默认时效和默认气压层
+   uv run python src/jet.py --init-time 2026062900
+
+   # 只处理850hPa的短时效子集
+   uv run python src/jet.py --init-time 2026062900 --fc-hours 000 006 012 --target-levs 850
+
+   # 只生成JSON，不保存PNG图像
+   uv run python src/jet.py --init-time 2026062900 --target-levs 850 --no-save-image
    ```
 
 ## 配置说明
@@ -219,6 +244,124 @@ data/2024061412/trough_data/trough_2024061412_000_500hPa_ecmwf.json
 - `attributes.avg_wind_speed`：槽线沿线平均风速。
 - `attributes.angle`：槽线弯折角度；无法计算时在JSON中为 `null`。
 - `line_id`：当前文件内的槽线序号。
+
+## 急流轴算法运行与输出数据格式
+
+`src/jet.py` 支持按起报时次、预报时效和气压层输出急流轴图像与JSON数据。默认起报时次由 `calLatestBaseTime()` 按ECMWF发布时间计算；默认预报时效为 `000` 至 `240` 小时；默认气压层为 `200、500、850、925、950 hPa`。
+
+算法流程主要包括：对 `uwnd`、`vwnd` 进行高斯平滑，计算风速，将风矢量旋转90度得到垂直方向，沿该方向计算风速平流，根据风速阈值和平流符号跨纬向变化提取急流轴点，随后连线、按局地风向调整线段方向，并使用样条平滑后输出。
+
+### 运行命令
+
+```bash
+# 使用最新起报时次，处理默认预报时效和默认气压层
+uv run python src/jet.py
+
+# 指定起报时次
+uv run python src/jet.py --init-time 2026062900
+
+# 指定预报时效和气压层
+uv run python src/jet.py --init-time 2026062900 --fc-hours 000 006 012 --target-levs 850 925
+
+# 只生成JSON
+uv run python src/jet.py --init-time 2026062900 --target-levs 850 --no-save-image
+
+# 只运行识别和绘图，不写JSON
+uv run python src/jet.py --init-time 2026062900 --target-levs 850 --no-save-json
+```
+
+常用参数：
+
+- `--init-time 2026062900`：起报时次，格式为 `YYYYMMDDHH`；不传时自动计算最新ECMWF起报。
+- `--fc-hours 000 006 012`：指定预报时效；默认处理内置的ECMWF常用时效清单。
+- `--target-levs 850 925`：指定气压层，单位 hPa；默认处理 `200、500、850、925、950 hPa`。
+- `--output-root data`：输出根目录。
+- `--source ecmwfthin`：TDS数据源。
+- `--no-save-image`：不保存PNG图像。
+- `--no-save-json`：不保存JSON数据。
+- `--stop-on-error`：任一时效或层次失败时立即停止；默认记录失败并继续后续任务。
+
+### 输出路径
+
+- 图像文件：`data/{init_time}/jet_images/jet_{init_time}_{fc_hour}_{target_lev}hPa_ecmwf.png`
+- JSON文件：`data/{init_time}/jet_data/jet_{init_time}_{fc_hour}_{target_lev}hPa_ecmwf.json`
+
+例如：
+
+```text
+data/2026062900/jet_images/jet_2026062900_000_850hPa_ecmwf.png
+data/2026062900/jet_data/jet_2026062900_000_850hPa_ecmwf.json
+```
+
+### JSON结构
+
+每个JSON文件只保存一个 `init_time + fc_hour + target_lev` 的急流轴结果。`jet_axis_lines` 是急流轴线列表，每条线包含原始点、平滑后点和沿线诊断属性。内部算法使用 `[lon, lat]` 点序，JSON统一输出为 `{lat, lon}`。
+
+```json
+{
+  "init_time": "2026062900",
+  "fc_hour": "000",
+  "target_lev": 850,
+  "source": "ecmwfthin",
+  "units": {
+    "target_lev": "hPa",
+    "longitude": "degrees_east",
+    "latitude": "degrees_north",
+    "length": "degrees",
+    "avg_wind_speed": "m/s",
+    "max_wind_speed": "m/s"
+  },
+  "config": {
+    "wind_smooth_sigma": 3,
+    "speed_threshold": 4,
+    "interval_dis": 2.0,
+    "length_min": 5.0,
+    "smoothness": 5,
+    "barb_skip": 8,
+    "figsize": [10, 8],
+    "dpi": 150
+  },
+  "jet_axis_lines": [
+    {
+      "line_id": 1,
+      "points": [
+        {"lat": 28.0, "lon": 110.0}
+      ],
+      "smoothed_points": [
+        {"lat": 28.1, "lon": 110.2}
+      ],
+      "attributes": {
+        "region_box": {
+          "min_lat": 26.5,
+          "max_lat": 31.0,
+          "min_lon": 108.0,
+          "max_lon": 116.0
+        },
+        "length": 9.2,
+        "avg_wind_speed": 12.8,
+        "max_wind_speed": 18.4
+      }
+    }
+  ]
+}
+```
+
+字段说明：
+
+- `init_time`：起报时次，格式为 `YYYYMMDDHH`。
+- `fc_hour`：三位预报时效字符串，例如 `000`、`024`、`240`。
+- `target_lev`：气压层，单位为 hPa。
+- `source`：数据源，默认 `ecmwfthin`。
+- `units`：主要数值字段单位说明。
+- `config`：本次急流轴识别使用的主要参数。
+- `jet_axis_lines`：急流轴线列表。
+- `line_id`：当前文件内的急流轴线序号。
+- `points`：连线后的原始急流轴点，按 `{lat, lon}` 存储。
+- `smoothed_points`：图像中实际绘制的样条平滑点，按 `{lat, lon}` 存储。
+- `attributes.region_box`：急流轴线外接经纬度范围。
+- `attributes.length`：急流轴线长度，当前按经纬度网格距离计算。
+- `attributes.avg_wind_speed`：急流轴线沿线平均风速。
+- `attributes.max_wind_speed`：急流轴线沿线最大风速。
 
 ## 涡旋算法运行与输出数据格式
 

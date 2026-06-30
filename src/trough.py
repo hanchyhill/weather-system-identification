@@ -2,31 +2,35 @@ import argparse
 import json
 from pathlib import Path
 
-import arrow
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
 import numpy as np
-import xarray as xr
 import metpy.calc as mpcalc
 from metpy.units import units
 import pandas as pd
-from scipy.spatial import distance
-from scipy.interpolate import splprep, splev
-import scipy.special
 
+from weather_common import (
+    DEFAULT_SOURCE,
+    TIME_STR_LIST_ECMWFTHIN,
+    TARGET_LEV_LIST,
+    WeatherDataError,
+    WeatherDataReadError,
+    WeatherDataNotReadyError,
+    _json_float,
+    _points_to_json,
+    _read_existing_line_count,
+    _to_data_array,
+    _to_float,
+    calLatestBaseTime,
+    form_lines,
+    format_fc_hour,
+    load_weather_data,
+    smooth_lines,
+    smooth_lines_bezier,
+    validate_weather_data_values,
+)
 
-DEFAULT_SOURCE = 'ecmwfthin'
-ABNORMAL_DATA_THRESHOLD = -999
-TIME_STR_LIST_ECMWFTHIN = [
-    '000', '003', '006', '009', '012', '015', '018', '021', '024',
-    '027', '030', '033', '036', '039', '042', '045', '048', '051',
-    '054', '057', '060', '063', '066', '069', '072', '078', '084',
-    '090', '096', '102', '108', '114', '120', '126', '132', '138',
-    '144', '150', '156', '162', '168', '174', '180', '186', '192',
-    '198', '204', '210', '216', '222', '228', '234', '240',
-]
-TARGET_LEV_LIST = [200, 500, 850, 925, 950] # , 1000]
 TROUGH_CONFIG = {
     'interval_dis': 2.0,
     'length_min': 6,
@@ -73,80 +77,6 @@ TROUGH_CONFIG = {
     },
 }
 
-
-class WeatherDataError(Exception):
-    """气象数据读取或校验异常。"""
-
-
-class WeatherDataReadError(WeatherDataError):
-    """气象数据读取失败。"""
-
-
-class WeatherDataNotReadyError(WeatherDataError):
-    """气象数据尚未更新或包含异常填充值。"""
-
-
-def calLatestBaseTime() -> str:
-    """
-    计算最新时次起报。
-
-    返回:
-    - baseTime: str, 格式为YYYYMMDDHH
-    """
-    utcnow = arrow.utcnow()
-    hour = utcnow.hour
-    # ECMWF 任务计划: https://confluence.ecmwf.int/display/UDOC/Dissemination+schedule
-    if hour >= 7 and hour < 19:
-        base_time = f"{utcnow.format('YYYYMMDD')}00"
-    elif hour >= 19:
-        base_time = f"{utcnow.format('YYYYMMDD')}12"
-    else:
-        base_time = f"{utcnow.shift(days=-1).format('YYYYMMDD')}12"
-    return base_time
-
-
-def format_fc_hour(fc_hour):
-    """将预报时效统一格式化为三位字符串。"""
-    return str(fc_hour).strip().zfill(3)
-
-
-def _to_data_array(data):
-    if isinstance(data, xr.Dataset):
-        return data[list(data.data_vars)[0]]
-    return data
-
-
-def _to_float(value):
-    if hasattr(value, 'magnitude'):
-        value = value.magnitude
-    if hasattr(value, 'values'):
-        value = value.values
-
-    array_value = np.asarray(value)
-    if array_value.size == 0:
-        return np.nan
-
-    return float(array_value.reshape(-1)[0])
-
-
-def _json_float(value):
-    value = _to_float(value)
-    if not np.isfinite(value):
-        return None
-    return value
-
-
-def _points_to_json(points):
-    points = np.asarray(points)
-    if points.size == 0:
-        return []
-
-    return [
-        {'lat': _json_float(point[0]), 'lon': _json_float(point[1])}
-        for point in points
-    ]
-
-
 def _attributes_to_json(row):
     region_box = row['region_box']
     return {
@@ -163,145 +93,8 @@ def _attributes_to_json(row):
     }
 
 
-def _min_data_value(data):
-    data_array = _to_data_array(data)
-    values = np.asarray(data_array.values)
-    if values.size == 0 or np.all(np.isnan(values)):
-        return np.nan
-    return float(np.nanmin(values))
-
-
-def validate_weather_data_values(data_dict, threshold=ABNORMAL_DATA_THRESHOLD):
-    """
-    校验读取到的气象要素。任一要素存在小于threshold的值，视为数据未更新。
-    """
-    abnormal_items = []
-    for name, data in data_dict.items():
-        min_value = _min_data_value(data)
-        if np.isfinite(min_value) and min_value < threshold:
-            abnormal_items.append(f'{name} min={min_value}')
-
-    if abnormal_items:
-        raise WeatherDataNotReadyError(
-            'Abnormal weather data detected; data may not be updated yet: '
-            + ', '.join(abnormal_items)
-        )
-
-
 def _read_existing_trough_line_count(json_path):
-    if json_path is None or not json_path.exists():
-        return None
-
-    try:
-        with json_path.open('r', encoding='utf-8') as json_file:
-            trough_data = json.load(json_file)
-        return len(trough_data.get('trough_lines', []))
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
-def load_weather_data(init_time, fc_hour=0, target_lev=500, source=DEFAULT_SOURCE,
-                      base_url_template='http://10.148.8.71:7080/thredds/dodsC/{0}/'):
-    """
-    加载气象数据
-
-    参数:
-    - init_time: str, 初始时间,格式为'YYYYMMDDHH'
-    - fc_hour: int或str, 预报小时,默认为0
-    - target_lev: int或float, 目标气压层,单位hPa
-    - source: str, 数据源,默认为'ecmwfthin'
-    - base_url_template: str, 基础URL模板
-
-    返回:
-    - data_dict: dict, 包含以下键值对:
-        - 'uwnd': 经向风速数据
-        - 'vwnd': 纬向风速数据
-        - 'latitude': 纬度数组
-        - 'longitude': 经度数组
-        - 'grid_unit': 网格单位
-    """
-    year = init_time[0:4]
-    month = init_time[4:6]
-    day = init_time[6:8]
-    hour = init_time[8:10]
-
-    base_url = base_url_template.format(source)
-
-    # 构建URLs
-    # url_rhum = base_url + '{0}{1}/rhum.nc'.format(year, month)
-    url_vector_x = base_url + '{0}{1}/uwnd.nc'.format(year, month)
-    url_vector_y = base_url + '{0}{1}/vwnd.nc'.format(year, month)
-    # url_temp = base_url + '{0}{1}/temp.nc'.format(year, month)
-    # url_hght = base_url + '{0}{1}/hght.nc'.format(year, month)
-    # url_spre = base_url + '{0}{1}/spre.nc'.format(year, month)
-
-    try:
-        # 打开数据集
-        # dataset_rhum = xr.open_dataset(url_rhum)
-        dataset_vec_x = xr.open_dataset(url_vector_x)
-        dataset_vec_y = xr.open_dataset(url_vector_y)
-        # dataset_temp = xr.open_dataset(url_temp)
-        # dataset_hght = xr.open_dataset(url_hght)
-        # dataset_spre = xr.open_dataset(url_spre)
-
-        # 构建变量名
-        selected_time = '{0}-{1}-{2} {3}:00:00'.format(year, month, day, hour)
-        fc_str = format_fc_hour(fc_hour)
-        # rhum_var_name = 'rhum{}'.format(fc_str)
-        vector_x_var_name = 'uwnd{}'.format(fc_str)
-        vector_y_var_name = 'vwnd{}'.format(fc_str)
-        # temp_var_name = 'temp{}'.format(fc_str)
-        # hght_var_name = 'hght{}'.format(fc_str)
-        # spre_var_name = 'spre{}'.format(fc_str)
-
-        # 提取数据
-        # rhum = dataset_rhum[rhum_var_name].sel(time=selected_time, level=target_lev).to_dataset(name=rhum_var_name)
-        uwnd = dataset_vec_x[vector_x_var_name].sel(time=selected_time, level=target_lev).to_dataset(name=vector_x_var_name)
-        vwnd = dataset_vec_y[vector_y_var_name].sel(time=selected_time, level=target_lev).to_dataset(name=vector_y_var_name)
-        # temp = dataset_temp[temp_var_name].sel(time=selected_time, level=target_lev).to_dataset(name=temp_var_name)
-        # hght = dataset_hght[hght_var_name].sel(time=selected_time, level=target_lev).to_dataset(name=hght_var_name)
-        # spre = dataset_spre[spre_var_name].sel(time=selected_time, level=0.0).to_dataset(name=spre_var_name)
-
-        validate_weather_data_values({
-            # 'rhum': rhum,
-            'uwnd': uwnd,
-            'vwnd': vwnd,
-            # 'temp': temp,
-            # 'hght': hght,
-            # 'spre': spre,
-        })
-
-        # 解析CF元数据
-        # rhum = rhum.metpy.parse_cf(varname=rhum_var_name)
-        uwnd = uwnd.metpy.parse_cf(varname=vector_x_var_name)
-        vwnd = vwnd.metpy.parse_cf(varname=vector_y_var_name)
-        # temp = temp.metpy.parse_cf(varname=temp_var_name)
-        # hght = hght.metpy.parse_cf(varname=hght_var_name)
-        # spre = spre.metpy.parse_cf(varname=spre_var_name)
-    except WeatherDataNotReadyError:
-        raise
-    except Exception as exc:
-        raise WeatherDataReadError(
-            f'Failed to read weather data: init_time={init_time}, '
-            f'fc_hour={format_fc_hour(fc_hour)}, target_lev={target_lev}, source={source}'
-        ) from exc
-
-    # 提取经纬度信息
-    latitude = uwnd.lat
-    longitude = uwnd.lon
-    grid_unit = (longitude[1] - longitude[0]).item()
-
-    return {
-        'uwnd': uwnd,
-        'vwnd': vwnd,
-        # 'temp': temp,
-        # 'hght': hght,
-        # 'rhum': rhum,
-        # 'spre': spre,
-        'latitude': latitude,
-        'longitude': longitude,
-        'grid_unit': grid_unit
-    }
+    return _read_existing_line_count(json_path, 'trough_lines')
 
 
 def calculate_shear_points(uwnd, vwnd, latitude, longitude, grid_unit):
@@ -384,117 +177,6 @@ def calculate_shear_points(uwnd, vwnd, latitude, longitude, grid_unit):
         'shear_v_up': shear_v_up,
         'shear_v_down': shear_v_down
     }
-
-
-def form_lines(points, interval_dis, length_min):
-    """
-    将切变点连接成线段
-
-    参数:
-    - points: numpy.ndarray, 切变点数组
-    - interval_dis: float, 连接阈值距离
-    - length_min: float, 最小线段长度
-
-    返回:
-    - list: 线段列表,每条线段是点的列表
-    """
-    num_points = len(points)
-    visited = np.zeros(num_points, dtype=bool)
-    lines = []
-
-    for i in range(num_points):
-        if visited[i]:
-            continue
-
-        current_line = [points[i]]
-        visited[i] = True
-
-        while True:
-            dists = distance.cdist([current_line[-1]], points[~visited], metric='euclidean')
-            unvisited_indices = np.where(~visited)[0]
-
-            if len(dists[0]) == 0:
-                break
-            min_dist_idx = np.argmin(dists[0])
-            min_dist = dists[0][min_dist_idx]
-
-            if min_dist < interval_dis:
-                current_line.append(points[unvisited_indices[min_dist_idx]])
-                visited[unvisited_indices[min_dist_idx]] = True
-            else:
-                break
-
-        total_length = sum(
-            np.linalg.norm(np.array(current_line[i]) - np.array(current_line[i+1]))
-            for i in range(len(current_line) - 1)
-        )
-
-        if total_length > length_min:
-            lines.append(current_line)
-
-    return lines
-
-
-def smooth_lines(lines, smoothness=0.5):
-    """
-    使用样条插值平滑线段
-
-    参数:
-    - lines: list, 线段列表
-    - smoothness: float, 平滑参数
-
-    返回:
-    - list: 平滑后的线段列表
-    """
-    smoothed_lines = []
-    for line in lines:
-        line = np.array(line)
-        if len(line) > 2:
-            tck, u = splprep([line[:, 0], line[:, 1]], s=smoothness)
-            u_new = np.linspace(0, 1, 100)
-            smoothed_points = np.array(splev(u_new, tck)).T
-            smoothed_lines.append(smoothed_points)
-        else:
-            smoothed_lines.append(line)
-    return smoothed_lines
-
-
-def smooth_lines_bezier(lines, num_points=100, num_control_points=None):
-    """
-    使用Bezier曲线平滑线段
-
-    参数:
-    - lines: list, 线段列表
-    - num_points: int, 平滑后每条线的点数
-    - num_control_points: int或None, 贝塞尔曲线的控制点数量
-
-    返回:
-    - list: 平滑后的线段列表
-    """
-    def bezier_curve(points, t):
-        n = len(points) - 1
-        return sum(
-            scipy.special.comb(n, i) * (1 - t)**(n - i) * t**i * np.array(points[i])
-            for i in range(n + 1)
-        )
-
-    smoothed_lines = []
-    t_values = np.linspace(0, 1, num_points)
-
-    for line in lines:
-        if len(line) > 2:
-            if num_control_points is not None and num_control_points < len(line):
-                control_point_count = max(2, num_control_points)
-                indices = np.linspace(0, len(line) - 1, control_point_count, dtype=int)
-                control_points = [line[i] for i in indices]
-            else:
-                control_points = line
-
-            smoothed_lines.append([bezier_curve(control_points, t) for t in t_values])
-        else:
-            smoothed_lines.append(line)
-
-    return smoothed_lines
 
 
 def add_meteorological_attributes(lines, u10, v10):
