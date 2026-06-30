@@ -43,19 +43,28 @@ const worldFeatures = ref(null)
 const activeSvgImage = ref(null)
 const activeLayerRecord = ref(null)
 const troughData = ref(null)
+const vortexCenters = ref([])
+const vortexTracks = ref(null)
 const showSvgLayer = ref(true)
 const showTrough = ref(true)
 const showRawPoints = ref(false)
+const showVortexCenters = ref(true)
+const showVortexTracks = ref(true)
+const showWarmOnlyTracks = ref(false)
 const showTooltip = ref(true)
 const loadingState = reactive({
   manifest: '未加载',
   svg: '未加载',
   trough: '未加载',
+  vortexCenters: '未加载',
+  vortexTracks: '未加载',
   map: '未加载'
 })
 const errorMessage = ref('')
 const mouseGeo = ref(null)
 const hoverLine = ref(null)
+const hoverVortexCenter = ref(null)
+const hoverVortexTrack = ref(null)
 const cache = new SvgImageCache()
 
 let resizeObserver = null
@@ -114,6 +123,12 @@ const layerStatus = computed(() => {
 })
 
 const visibleTroughCount = computed(() => troughData.value?.trough_lines?.length || 0)
+const visibleVortexCenterCount = computed(() => vortexCenters.value?.length || 0)
+const visibleVortexTrackCount = computed(() => {
+  if (String(level.value) !== '850') return 0
+  const tracks = vortexTracks.value?.tracks || []
+  return showWarmOnlyTracks.value ? tracks.filter((track) => track.warm).length : tracks.length
+})
 
 function formatNumber(value, digits = 2) {
   return Number.isFinite(value) ? value.toFixed(digits) : '--'
@@ -217,10 +232,16 @@ function drawMap() {
   drawBaseMap(context, path)
   drawSvgLayer(context, projection)
   drawTroughLines(context, projection)
+  drawVortexTracks(context, projection)
+  drawVortexCenters(context, projection)
   drawGraticule(context, projection)
 
   context.restore()
   drawHudFrame(context)
+}
+
+function trackColor(track) {
+  return track.warm ? '#7f1d1d' : '#1e3a8a'
 }
 
 function drawBaseMap(context, path) {
@@ -308,6 +329,64 @@ function drawTroughLines(context, projection) {
   }
 }
 
+function drawVortexTracks(context, projection) {
+  if (String(level.value) !== '850' || !showVortexTracks.value || !vortexTracks.value?.tracks?.length) return
+
+  vortexTracks.value.tracks.forEach((track) => {
+    if (showWarmOnlyTracks.value && !track.warm) return
+    const points = (track.track || []).filter((point) => Number.isFinite(point.lon) && Number.isFinite(point.lat))
+    if (points.length < 2) return
+
+    const currentStep = Number(fcHour.value)
+    const pastPoints = points.filter((point) => Number(point.step ?? point.fc_hour) <= currentStep)
+    const futurePoints = points.filter((point) => Number(point.step ?? point.fc_hour) >= currentStep)
+    const color = trackColor(track)
+    const lineWidth = track.warm ? 2.1 / zoomTransform.value.k : 1.5 / zoomTransform.value.k
+
+    drawTrackSegment(context, projection, pastPoints, color, lineWidth, false)
+    drawTrackSegment(context, projection, futurePoints, color, lineWidth, true)
+  })
+}
+
+function drawTrackSegment(context, projection, points, color, lineWidth, dashed) {
+  if (points.length < 2) return
+
+  context.save()
+  context.beginPath()
+  points.forEach((point, pointIndex) => {
+    const xy = projection([point.lon, point.lat])
+    if (!xy) return
+    if (pointIndex === 0) context.moveTo(xy[0], xy[1])
+    else context.lineTo(xy[0], xy[1])
+  })
+  context.strokeStyle = color
+  context.lineWidth = lineWidth
+  context.setLineDash(dashed ? [5 / zoomTransform.value.k, 4 / zoomTransform.value.k] : [])
+  context.lineCap = 'round'
+  context.lineJoin = 'round'
+  context.stroke()
+  context.restore()
+}
+
+function drawVortexCenters(context, projection) {
+  if (!showVortexCenters.value || !vortexCenters.value?.length) return
+
+  for (const center of vortexCenters.value) {
+    if (!Number.isFinite(center.lon) || !Number.isFinite(center.lat)) continue
+    const xy = projection([center.lon, center.lat])
+    if (!xy) continue
+
+    context.save()
+    context.translate(xy[0], xy[1])
+    context.fillStyle = '#dc2626'
+    context.font = `800 ${24 / zoomTransform.value.k}px Arial`
+    context.textAlign = 'center'
+    context.textBaseline = 'middle'
+    context.fillText('L', 0, 0.5 / zoomTransform.value.k)
+    context.restore()
+  }
+}
+
 function drawHudFrame(context) {
   context.strokeStyle = '#bcc7d3'
   context.lineWidth = 1
@@ -334,6 +413,47 @@ function findNearestLine(mouse) {
   }
 
   return nearestDistance <= 12 ? nearest : null
+}
+
+function findNearestVortexCenter(mouse) {
+  if (!showTooltip.value || !showVortexCenters.value || !vortexCenters.value?.length || !mouse) return null
+  const projection = buildProjection()
+  let nearest = null
+  let nearestDistance = Infinity
+
+  for (const center of vortexCenters.value) {
+    const screen = transformedPoint(projection, [center.lon, center.lat])
+    if (!screen) continue
+    const distance = Math.hypot(screen[0] - mouse.x, screen[1] - mouse.y)
+    if (distance < nearestDistance) {
+      nearestDistance = distance
+      nearest = center
+    }
+  }
+
+  return nearestDistance <= 14 ? nearest : null
+}
+
+function findNearestVortexTrack(mouse) {
+  if (String(level.value) !== '850' || !showTooltip.value || !showVortexTracks.value || !vortexTracks.value?.tracks?.length || !mouse) return null
+  const projection = buildProjection()
+  let nearest = null
+  let nearestDistance = Infinity
+
+  vortexTracks.value.tracks.forEach((track) => {
+    if (showWarmOnlyTracks.value && !track.warm) return
+    for (const point of track.track || []) {
+      const screen = transformedPoint(projection, [point.lon, point.lat])
+      if (!screen) continue
+      const distance = Math.hypot(screen[0] - mouse.x, screen[1] - mouse.y)
+      if (distance < nearestDistance) {
+        nearestDistance = distance
+        nearest = { track, point }
+      }
+    }
+  })
+
+  return nearestDistance <= 11 ? nearest : null
 }
 
 async function fetchJson(url) {
@@ -378,6 +498,8 @@ async function loadManifest() {
   } finally {
     await loadActiveLayer()
     await loadTrough()
+    await loadVortexCenters()
+    await loadVortexTracks()
     requestDraw()
   }
 }
@@ -441,6 +563,61 @@ async function loadTrough() {
   }
 }
 
+async function loadVortexCenters() {
+  vortexCenters.value = []
+  hoverVortexCenter.value = null
+  if (level.value === 'surface') {
+    loadingState.vortexCenters = '地面层无中心'
+    requestDraw()
+    return
+  }
+
+  const centerUrl = `/data/${initTime.value}/vortex_centers/vortex_center_${initTime.value}_${fcHour.value}_${level.value}hPa.json`
+  const warmUrl = `/data/${initTime.value}/vortex_warm_core/vortex_warm_core_${initTime.value}_${fcHour.value}_850hPa.json`
+  try {
+    loadingState.vortexCenters = '加载中'
+    const centers = await fetchJson(centerUrl)
+
+    if (String(level.value) === '850') {
+      try {
+        const warmCenters = await fetchJson(warmUrl)
+        const warmByPosition = new Map(
+          warmCenters.map((center) => [`${Number(center.lat).toFixed(4)}:${Number(center.lon).toFixed(4)}`, center])
+        )
+        vortexCenters.value = centers.map((center) => ({
+          ...center,
+          ...(warmByPosition.get(`${Number(center.lat).toFixed(4)}:${Number(center.lon).toFixed(4)}`) || {})
+        }))
+      } catch {
+        vortexCenters.value = centers
+      }
+    } else {
+      vortexCenters.value = centers
+    }
+
+    loadingState.vortexCenters = '完成'
+  } catch {
+    loadingState.vortexCenters = '缺失'
+  } finally {
+    requestDraw()
+  }
+}
+
+async function loadVortexTracks() {
+  vortexTracks.value = null
+  hoverVortexTrack.value = null
+  const url = `/data/${initTime.value}/vortex_tracks/tc_tracking_results_processed_${initTime.value}.json`
+  try {
+    loadingState.vortexTracks = '加载中'
+    vortexTracks.value = await fetchJson(url)
+    loadingState.vortexTracks = '完成'
+  } catch {
+    loadingState.vortexTracks = '缺失'
+  } finally {
+    requestDraw()
+  }
+}
+
 function resetView() {
   zoomTransform.value = d3.zoomIdentity
   if (canvasRef.value && zoomBehavior) {
@@ -451,12 +628,16 @@ function resetView() {
 
 function handleMouseMove(event) {
   mouseGeo.value = screenToGeo(event)
-  hoverLine.value = findNearestLine(mouseGeo.value)
+  hoverVortexCenter.value = findNearestVortexCenter(mouseGeo.value)
+  hoverVortexTrack.value = hoverVortexCenter.value ? null : findNearestVortexTrack(mouseGeo.value)
+  hoverLine.value = hoverVortexCenter.value || hoverVortexTrack.value ? null : findNearestLine(mouseGeo.value)
 }
 
 function handleMouseLeave() {
   mouseGeo.value = null
   hoverLine.value = null
+  hoverVortexCenter.value = null
+  hoverVortexTrack.value = null
 }
 
 function resizeCanvas() {
@@ -471,9 +652,10 @@ function resizeCanvas() {
 watch([fcHour, level, layerType], async () => {
   await loadActiveLayer()
   await loadTrough()
+  await loadVortexCenters()
 })
 
-watch([showSvgLayer, showTrough, showRawPoints, projectionName], () => {
+watch([showSvgLayer, showTrough, showRawPoints, showVortexCenters, showVortexTracks, showWarmOnlyTracks, projectionName], () => {
   requestDraw()
 })
 
@@ -557,6 +739,15 @@ onUnmounted(() => {
         <section class="switch-list">
           <label><span>SVG 图层</span><n-switch v-model:value="showSvgLayer" size="small" /></label>
           <label><span>槽线</span><n-switch v-model:value="showTrough" size="small" /></label>
+          <label><span>涡旋中心 L</span><n-switch v-model:value="showVortexCenters" size="small" /></label>
+          <label>
+            <span>850hPa 轨迹</span>
+            <n-switch v-model:value="showVortexTracks" size="small" :disabled="level !== '850'" />
+          </label>
+          <label>
+            <span>仅暖心轨迹</span>
+            <n-switch v-model:value="showWarmOnlyTracks" size="small" :disabled="level !== '850'" />
+          </label>
           <label><span>原始点</span><n-switch v-model:value="showRawPoints" size="small" /></label>
           <label><span>属性提示</span><n-switch v-model:value="showTooltip" size="small" /></label>
         </section>
@@ -566,8 +757,12 @@ onUnmounted(() => {
           <div><span>Manifest</span><n-tag size="small" :bordered="false">{{ loadingState.manifest }}</n-tag></div>
           <div><span>SVG</span><n-tag size="small" :bordered="false">{{ loadingState.svg }}</n-tag></div>
           <div><span>槽线</span><n-tag size="small" :bordered="false">{{ loadingState.trough }}</n-tag></div>
+          <div><span>涡旋中心</span><n-tag size="small" :bordered="false">{{ loadingState.vortexCenters }}</n-tag></div>
+          <div><span>涡旋轨迹</span><n-tag size="small" :bordered="false">{{ level === '850' ? loadingState.vortexTracks : '仅850hPa显示' }}</n-tag></div>
           <div><span>图层状态</span><n-tag size="small" :bordered="false">{{ layerStatus }}</n-tag></div>
           <div><span>槽线数量</span><strong>{{ visibleTroughCount }}</strong></div>
+          <div><span>中心数量</span><strong>{{ visibleVortexCenterCount }}</strong></div>
+          <div><span>轨迹数量</span><strong>{{ visibleVortexTrackCount }}</strong></div>
         </section>
 
         <p v-if="errorMessage" class="empty-note">{{ errorMessage }}</p>
@@ -603,7 +798,26 @@ onUnmounted(() => {
             <span>k={{ formatNumber(zoomTransform.k, 2) }}</span>
           </div>
 
-          <div v-if="hoverLine" class="line-tooltip">
+          <div v-if="hoverVortexCenter" class="line-tooltip">
+            <strong>涡旋中心 L</strong>
+            <span>{{ hoverVortexCenter.level }} hPa +{{ hoverVortexCenter.fc_hour }} h</span>
+            <span>{{ formatNumber(hoverVortexCenter.lon, 2) }}E, {{ formatNumber(hoverVortexCenter.lat, 2) }}N</span>
+            <span>涡度 {{ formatNumber(hoverVortexCenter.vort, 7) }} s^-1</span>
+            <span>最大风 {{ formatNumber(hoverVortexCenter.vmax, 1) }} m/s</span>
+            <span v-if="hoverVortexCenter.warm">暖心: 是</span>
+            <span v-if="hoverVortexCenter.is_surface_center === 1">地面校正: 是</span>
+          </div>
+
+          <div v-else-if="hoverVortexTrack" class="line-tooltip">
+            <strong>涡旋轨迹 {{ hoverVortexTrack.track.seq_number }}</strong>
+            <span>{{ hoverVortexTrack.track.GZ_number }}</span>
+            <span>+{{ hoverVortexTrack.point.fc_hour }} h</span>
+            <span>{{ formatNumber(hoverVortexTrack.point.lon, 2) }}E, {{ formatNumber(hoverVortexTrack.point.lat, 2) }}N</span>
+            <span>最大风 {{ formatNumber(hoverVortexTrack.track.max_wind, 1) }} m/s</span>
+            <span>暖心轨迹: {{ hoverVortexTrack.track.warm ? '是' : '否' }}</span>
+          </div>
+
+          <div v-else-if="hoverLine" class="line-tooltip">
             <strong>{{ hoverLine.label || hoverLine.shear_type }}</strong>
             <span>ID {{ hoverLine.line_id }}</span>
             <span>长度 {{ formatNumber(hoverLine.attributes?.length, 2) }}</span>

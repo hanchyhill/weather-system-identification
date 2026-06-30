@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
@@ -18,6 +20,7 @@ from vortex_common import (  # noqa: E402
     warm_json_path,
     write_json,
 )
+from vortex_center import build_center_records  # noqa: E402
 from vortex_workflow import run_vortex_workflow  # noqa: E402
 from vortex_tracker import (  # noqa: E402
     VortexPreflightError,
@@ -37,6 +40,21 @@ class VortexCommonTests(unittest.TestCase):
 
     def test_haversine_distance(self):
         self.assertAlmostEqual(haversine_distance(0, 0, 0, 1), 111.19, places=1)
+
+    def test_non_850_center_records_keep_missing_wind_values_null(self):
+        centers = np.asarray([[20.0, 130.0, 4.0e-5]])
+        records = build_center_records(
+            init_time="2026062900",
+            fc_hour="000",
+            level=200,
+            centers=centers,
+            source="ecmwfthin",
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertIsNone(records[0]["vmax"])
+        self.assertIsNone(records[0]["vmax_lat"])
+        self.assertIsNone(records[0]["vmax_lon"])
 
 
 class VortexTrackerTests(unittest.TestCase):

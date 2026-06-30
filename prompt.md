@@ -159,12 +159,24 @@ python需要绘制的图有：
 
 - TODO  等人工确认：绘图细节，比如风向杆设置，风速填色设置，位势高度(等值线)设置等。
 
+### 急流轴数据的实现
+
+根据 @src\jet_v2.ipynb 中的代码，实现急流轴数据的实现。
+最终急流轴数据以此参数为准：
+```python
+smoothness=5
+lines_smooth = smooth_lines(adjusted_lines)
+plot_lines_with_direction(lines_smooth, uwnd, vwnd, fill=False, same_color=True)
+```
+整体代码风格参考  @src\trough.py 中的代码，主要是把原本的槽线算法改为实现急流轴数据的生成和绘制。
+与trough.py 共用的函数，可以抽离出来，作为公共函数库。
 
 ## TODO
 
-1. 涡旋中心算法实装[in progress]。
-2. 涡旋追踪算法实装[in progress]。
+1. 涡旋中心算法实装[success]。
+2. 涡旋追踪算法实装[success]。
 3. 锋面识别算法探究[pending]。
 4. 副热带高压脊线识别(上边界，下边界)[pending]。
-5. web交互实装[pending]。
-6. 常用气象图的SVG导出[pending]。
+5. web交互实装[in progress]。
+6. 常用气象图的SVG导出[in progress]。[draw_img](src/draw/generate_svg_layers.py)
+7. 急流轴实现[pending]。

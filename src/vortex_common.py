@@ -93,6 +93,8 @@ def forecast_time(init_time: str, fc_hour: int | str) -> datetime:
 
 def json_safe_float(value: Any) -> float | None:
     """Convert scalar-like numeric values to JSON-safe floats."""
+    if value is None:
+        return None
     if hasattr(value, "magnitude"):
         value = value.magnitude
     if hasattr(value, "values"):
@@ -100,7 +102,10 @@ def json_safe_float(value: Any) -> float | None:
     array_value = np.asarray(value)
     if array_value.size == 0:
         return None
-    result = float(array_value.reshape(-1)[0])
+    scalar_value = array_value.reshape(-1)[0]
+    if scalar_value is None:
+        return None
+    result = float(scalar_value)
     if not np.isfinite(result):
         return None
     return result
