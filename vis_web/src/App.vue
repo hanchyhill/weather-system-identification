@@ -5,6 +5,7 @@ import {
   NButton,
   NConfigProvider,
   NInput,
+  NInputNumber,
   NSelect,
   NSwitch,
   NTag,
@@ -53,7 +54,27 @@ const showRawPoints = ref(false)
 const showVortexCenters = ref(true)
 const showVortexTracks = ref(true)
 const showWarmOnlyTracks = ref(false)
+const showWarmOnlyCenters = ref(false)
 const showTooltip = ref(true)
+const activeSystemTab = ref('trough')
+const troughMinLength = ref(0)
+const troughMinWindSpeed = ref(0)
+const troughLineWidth = ref(1.2)
+const troughShearFilters = reactive({
+  shear_u_left: true,
+  shear_u_right: true,
+  shear_v_up: true,
+  shear_v_down: true
+})
+const jetMinAxisLength = ref(0)
+const jetMinAvgWindSpeed = ref(0)
+const jetMinMaxWindSpeed = ref(0)
+const jetLineWidth = ref(2.2)
+const showJetArrowHeads = ref(true)
+const vortexMinWindSpeed = ref(0)
+const vortexMinVorticity = ref(0)
+const vortexTrackMinWindSpeed = ref(0)
+const showFutureVortexTracks = ref(true)
 const loadingState = reactive({
   manifest: '未加载',
   svg: '未加载',
@@ -79,6 +100,19 @@ const projectionOptions = [
   { label: '等经纬度', value: 'equirectangular' },
   { label: '墨卡托', value: 'mercator' },
   { label: '兰伯特', value: 'lambert' }
+]
+
+const systemTabs = [
+  { label: '槽线', value: 'trough' },
+  { label: '涡旋', value: 'vortex' },
+  { label: '急流轴', value: 'jet' }
+]
+
+const troughShearOptions = [
+  { label: 'U 左切变', value: 'shear_u_left' },
+  { label: 'U 右切变', value: 'shear_u_right' },
+  { label: 'V 上切变', value: 'shear_v_up' },
+  { label: 'V 下切变', value: 'shear_v_down' }
 ]
 
 const fallbackLayerOptions = [
@@ -126,17 +160,59 @@ const layerStatus = computed(() => {
     : activeLayerRecord.value.status
 })
 
-const visibleTroughCount = computed(() => troughData.value?.trough_lines?.length || 0)
-const visibleJetAxisCount = computed(() => jetData.value?.jet_axis_lines?.length || 0)
-const visibleVortexCenterCount = computed(() => vortexCenters.value?.length || 0)
-const visibleVortexTrackCount = computed(() => {
-  if (String(level.value) !== '850') return 0
-  const tracks = vortexTracks.value?.tracks || []
-  return showWarmOnlyTracks.value ? tracks.filter((track) => track.warm).length : tracks.length
+const visibleTroughLines = computed(() => {
+  if (!showTrough.value) return []
+  const lines = troughData.value?.trough_lines || []
+  return lines.filter((line) => {
+    const attributes = line.attributes || {}
+    return troughShearFilters[line.shear_type] !== false
+      && passesMinimum(attributes.length, troughMinLength.value)
+      && passesMinimum(attributes.avg_wind_speed, troughMinWindSpeed.value)
+  })
 })
+
+const visibleJetAxisLines = computed(() => {
+  if (!showJetAxes.value) return []
+  const lines = jetData.value?.jet_axis_lines || []
+  return lines.filter((line) => {
+    const attributes = line.attributes || {}
+    return passesMinimum(attributes.length, jetMinAxisLength.value)
+      && passesMinimum(attributes.avg_wind_speed, jetMinAvgWindSpeed.value)
+      && passesMinimum(attributes.max_wind_speed, jetMinMaxWindSpeed.value)
+  })
+})
+
+const visibleVortexCenters = computed(() => {
+  if (!showVortexCenters.value) return []
+  return (vortexCenters.value || []).filter((center) => (
+    (!showWarmOnlyCenters.value || center.warm)
+    && passesMinimum(center.vmax, vortexMinWindSpeed.value)
+    && passesMinimum(center.vort, vortexMinVorticity.value)
+  ))
+})
+
+const visibleVortexTracks = computed(() => {
+  if (String(level.value) !== '850' || !showVortexTracks.value) return []
+  const tracks = vortexTracks.value?.tracks || []
+  return tracks.filter((track) => (
+    (!showWarmOnlyTracks.value || track.warm)
+    && passesMinimum(track.max_wind, vortexTrackMinWindSpeed.value)
+  ))
+})
+const visibleTroughCount = computed(() => visibleTroughLines.value.length)
+const visibleJetAxisCount = computed(() => visibleJetAxisLines.value.length)
+const visibleVortexCenterCount = computed(() => visibleVortexCenters.value.length)
+const visibleVortexTrackCount = computed(() => visibleVortexTracks.value.length)
 
 function formatNumber(value, digits = 2) {
   return Number.isFinite(value) ? value.toFixed(digits) : '--'
+}
+
+function passesMinimum(value, minimum) {
+  const threshold = Number(minimum)
+  if (!Number.isFinite(threshold) || threshold <= 0) return true
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) && numericValue >= threshold
 }
 
 function normalizeFcHour(value) {
@@ -303,9 +379,9 @@ function drawSvgLayer(context, projection) {
 }
 
 function drawTroughLines(context, projection) {
-  if (!showTrough.value || !troughData.value?.trough_lines) return
+  if (!visibleTroughLines.value.length) return
 
-  for (const line of troughData.value.trough_lines) {
+  for (const line of visibleTroughLines.value) {
     const points = line.smoothed_points?.length ? line.smoothed_points : line.points
     if (!points?.length) continue
 
@@ -317,7 +393,7 @@ function drawTroughLines(context, projection) {
       else context.lineTo(xy[0], xy[1])
     })
     context.strokeStyle = SHEAR_COLORS[line.shear_type] || '#111827'
-    context.lineWidth = Math.max(1.2 / zoomTransform.value.k, 0.65)
+    context.lineWidth = Math.max(troughLineWidth.value / zoomTransform.value.k, 0.65)
     context.lineCap = 'round'
     context.lineJoin = 'round'
     context.stroke()
@@ -336,9 +412,9 @@ function drawTroughLines(context, projection) {
 }
 
 function drawJetAxes(context, projection) {
-  if (!showJetAxes.value || !jetData.value?.jet_axis_lines?.length) return
+  if (!visibleJetAxisLines.value.length) return
 
-  for (const line of jetData.value.jet_axis_lines) {
+  for (const line of visibleJetAxisLines.value) {
     const points = line.smoothed_points?.length ? line.smoothed_points : line.points
     if (!points?.length) continue
 
@@ -355,12 +431,12 @@ function drawJetAxes(context, projection) {
       else context.lineTo(point[0], point[1])
     })
     context.strokeStyle = '#e11d48'
-    context.lineWidth = 2.2 / zoomTransform.value.k
+    context.lineWidth = jetLineWidth.value / zoomTransform.value.k
     context.lineCap = 'round'
     context.lineJoin = 'round'
     context.stroke()
 
-    drawJetArrowHead(context, projectedPoints)
+    if (showJetArrowHeads.value) drawJetArrowHead(context, projectedPoints)
     context.restore()
   }
 }
@@ -441,16 +517,17 @@ function jetArrowGeometry(projectedPoints) {
 }
 
 function drawVortexTracks(context, projection) {
-  if (String(level.value) !== '850' || !showVortexTracks.value || !vortexTracks.value?.tracks?.length) return
+  if (!visibleVortexTracks.value.length) return
 
-  vortexTracks.value.tracks.forEach((track) => {
-    if (showWarmOnlyTracks.value && !track.warm) return
+  visibleVortexTracks.value.forEach((track) => {
     const points = (track.track || []).filter((point) => Number.isFinite(point.lon) && Number.isFinite(point.lat))
     if (points.length < 2) return
 
     const currentStep = Number(fcHour.value)
     const pastPoints = points.filter((point) => Number(point.step ?? point.fc_hour) <= currentStep)
-    const futurePoints = points.filter((point) => Number(point.step ?? point.fc_hour) >= currentStep)
+    const futurePoints = showFutureVortexTracks.value
+      ? points.filter((point) => Number(point.step ?? point.fc_hour) >= currentStep)
+      : []
     const color = trackColor(track)
     const lineWidth = track.warm ? 2.1 / zoomTransform.value.k : 1.5 / zoomTransform.value.k
 
@@ -480,9 +557,9 @@ function drawTrackSegment(context, projection, points, color, lineWidth, dashed)
 }
 
 function drawVortexCenters(context, projection) {
-  if (!showVortexCenters.value || !vortexCenters.value?.length) return
+  if (!visibleVortexCenters.value.length) return
 
-  for (const center of vortexCenters.value) {
+  for (const center of visibleVortexCenters.value) {
     if (!Number.isFinite(center.lon) || !Number.isFinite(center.lat)) continue
     const xy = projection([center.lon, center.lat])
     if (!xy) continue
@@ -505,12 +582,12 @@ function drawHudFrame(context) {
 }
 
 function findNearestLine(mouse) {
-  if (!showTooltip.value || !troughData.value?.trough_lines || !mouse) return null
+  if (!showTooltip.value || !visibleTroughLines.value.length || !mouse) return null
   const projection = buildProjection()
   let nearest = null
   let nearestDistance = Infinity
 
-  for (const line of troughData.value.trough_lines) {
+  for (const line of visibleTroughLines.value) {
     const points = line.smoothed_points?.length ? line.smoothed_points : line.points
     for (const point of points || []) {
       const screen = transformedPoint(projection, [point.lon, point.lat])
@@ -527,12 +604,12 @@ function findNearestLine(mouse) {
 }
 
 function findNearestJetLine(mouse) {
-  if (!showTooltip.value || !showJetAxes.value || !jetData.value?.jet_axis_lines?.length || !mouse) return null
+  if (!showTooltip.value || !visibleJetAxisLines.value.length || !mouse) return null
   const projection = buildProjection()
   let nearest = null
   let nearestDistance = Infinity
 
-  for (const line of jetData.value.jet_axis_lines) {
+  for (const line of visibleJetAxisLines.value) {
     const points = line.smoothed_points?.length ? line.smoothed_points : line.points
     for (const point of points || []) {
       const screen = transformedPoint(projection, [point.lon, point.lat])
@@ -549,12 +626,12 @@ function findNearestJetLine(mouse) {
 }
 
 function findNearestVortexCenter(mouse) {
-  if (!showTooltip.value || !showVortexCenters.value || !vortexCenters.value?.length || !mouse) return null
+  if (!showTooltip.value || !visibleVortexCenters.value.length || !mouse) return null
   const projection = buildProjection()
   let nearest = null
   let nearestDistance = Infinity
 
-  for (const center of vortexCenters.value) {
+  for (const center of visibleVortexCenters.value) {
     const screen = transformedPoint(projection, [center.lon, center.lat])
     if (!screen) continue
     const distance = Math.hypot(screen[0] - mouse.x, screen[1] - mouse.y)
@@ -568,13 +645,12 @@ function findNearestVortexCenter(mouse) {
 }
 
 function findNearestVortexTrack(mouse) {
-  if (String(level.value) !== '850' || !showTooltip.value || !showVortexTracks.value || !vortexTracks.value?.tracks?.length || !mouse) return null
+  if (!showTooltip.value || !visibleVortexTracks.value.length || !mouse) return null
   const projection = buildProjection()
   let nearest = null
   let nearestDistance = Infinity
 
-  vortexTracks.value.tracks.forEach((track) => {
-    if (showWarmOnlyTracks.value && !track.warm) return
+  visibleVortexTracks.value.forEach((track) => {
     for (const point of track.track || []) {
       const screen = transformedPoint(projection, [point.lon, point.lat])
       if (!screen) continue
@@ -790,6 +866,10 @@ function handleMouseMove(event) {
 }
 
 function handleMouseLeave() {
+  clearHoverState()
+}
+
+function clearHoverState() {
   mouseGeo.value = null
   hoverLine.value = null
   hoverJetLine.value = null
@@ -813,9 +893,38 @@ watch([fcHour, level, layerType], async () => {
   await loadVortexCenters()
 })
 
-watch([showSvgLayer, showTrough, showJetAxes, showRawPoints, showVortexCenters, showVortexTracks, showWarmOnlyTracks, projectionName], () => {
+watch([
+  showSvgLayer,
+  showTrough,
+  showJetAxes,
+  showRawPoints,
+  showVortexCenters,
+  showVortexTracks,
+  showWarmOnlyTracks,
+  showWarmOnlyCenters,
+  showTooltip,
+  projectionName,
+  troughMinLength,
+  troughMinWindSpeed,
+  troughLineWidth,
+  jetMinAxisLength,
+  jetMinAvgWindSpeed,
+  jetMinMaxWindSpeed,
+  jetLineWidth,
+  showJetArrowHeads,
+  vortexMinWindSpeed,
+  vortexMinVorticity,
+  vortexTrackMinWindSpeed,
+  showFutureVortexTracks
+], () => {
+  clearHoverState()
   requestDraw()
 })
+
+watch(troughShearFilters, () => {
+  clearHoverState()
+  requestDraw()
+}, { deep: true })
 
 onMounted(async () => {
   await nextTick()
@@ -846,7 +955,7 @@ onUnmounted(() => {
       <aside class="control-rail">
         <div class="brand-block">
           <h1>天气系统识别</h1>
-          <p>SVG 图层与槽线交互查看</p>
+          <p>SVG 图层与天气系统交互查看</p>
         </div>
 
         <section class="control-section">
@@ -896,19 +1005,119 @@ onUnmounted(() => {
 
         <section class="switch-list">
           <label><span>SVG 图层</span><n-switch v-model:value="showSvgLayer" size="small" /></label>
-          <label><span>槽线</span><n-switch v-model:value="showTrough" size="small" /></label>
-          <label><span>急流轴</span><n-switch v-model:value="showJetAxes" size="small" /></label>
-          <label><span>涡旋中心 L</span><n-switch v-model:value="showVortexCenters" size="small" /></label>
-          <label>
-            <span>850hPa 轨迹</span>
-            <n-switch v-model:value="showVortexTracks" size="small" :disabled="level !== '850'" />
-          </label>
-          <label>
-            <span>仅暖心轨迹</span>
-            <n-switch v-model:value="showWarmOnlyTracks" size="small" :disabled="level !== '850'" />
-          </label>
-          <label><span>原始点</span><n-switch v-model:value="showRawPoints" size="small" /></label>
           <label><span>属性提示</span><n-switch v-model:value="showTooltip" size="small" /></label>
+        </section>
+
+        <section class="system-config">
+          <div class="system-tab-list" role="tablist" aria-label="天气系统设置">
+            <button
+              v-for="option in systemTabs"
+              :key="option.value"
+              type="button"
+              :class="{ active: activeSystemTab === option.value }"
+              @click="activeSystemTab = option.value"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+
+          <div v-if="activeSystemTab === 'trough'" class="tab-panel">
+            <div class="option-row">
+              <span>显示槽线</span>
+              <n-switch v-model:value="showTrough" size="small" />
+            </div>
+            <div class="option-row">
+              <span>显示原始点</span>
+              <n-switch v-model:value="showRawPoints" size="small" />
+            </div>
+            <div class="option-list">
+              <label>
+                <span>最小长度</span>
+                <n-input-number v-model:value="troughMinLength" size="small" :min="0" :step="0.5" :precision="2" />
+              </label>
+              <label>
+                <span>最小平均风速</span>
+                <n-input-number v-model:value="troughMinWindSpeed" size="small" :min="0" :step="1" :precision="1" />
+              </label>
+              <label>
+                <span>线宽</span>
+                <n-input-number v-model:value="troughLineWidth" size="small" :min="0.6" :max="6" :step="0.2" :precision="1" />
+              </label>
+            </div>
+            <div class="filter-grid">
+              <label v-for="option in troughShearOptions" :key="option.value">
+                <span class="shear-swatch" :style="{ background: SHEAR_COLORS[option.value] }"></span>
+                <span>{{ option.label }}</span>
+                <n-switch v-model:value="troughShearFilters[option.value]" size="small" />
+              </label>
+            </div>
+          </div>
+
+          <div v-else-if="activeSystemTab === 'vortex'" class="tab-panel">
+            <div class="option-row">
+              <span>涡旋中心 L</span>
+              <n-switch v-model:value="showVortexCenters" size="small" />
+            </div>
+            <div class="option-row">
+              <span>850hPa 轨迹</span>
+              <n-switch v-model:value="showVortexTracks" size="small" :disabled="level !== '850'" />
+            </div>
+            <div class="option-row">
+              <span>仅暖心中心</span>
+              <n-switch v-model:value="showWarmOnlyCenters" size="small" />
+            </div>
+            <div class="option-row">
+              <span>仅暖心轨迹</span>
+              <n-switch v-model:value="showWarmOnlyTracks" size="small" :disabled="level !== '850'" />
+            </div>
+            <div class="option-row">
+              <span>未来轨迹</span>
+              <n-switch v-model:value="showFutureVortexTracks" size="small" :disabled="level !== '850'" />
+            </div>
+            <div class="option-list">
+              <label>
+                <span>中心最小风速</span>
+                <n-input-number v-model:value="vortexMinWindSpeed" size="small" :min="0" :step="1" :precision="1" />
+              </label>
+              <label>
+                <span>中心最小涡度</span>
+                <n-input-number v-model:value="vortexMinVorticity" size="small" :min="0" :step="0.00001" :precision="7" />
+              </label>
+              <label>
+                <span>轨迹最小最大风</span>
+                <n-input-number v-model:value="vortexTrackMinWindSpeed" size="small" :min="0" :step="1" :precision="1" :disabled="level !== '850'" />
+              </label>
+            </div>
+          </div>
+
+          <div v-else class="tab-panel">
+            <div class="option-row">
+              <span>显示急流轴</span>
+              <n-switch v-model:value="showJetAxes" size="small" />
+            </div>
+            <div class="option-row">
+              <span>箭头</span>
+              <n-switch v-model:value="showJetArrowHeads" size="small" />
+            </div>
+            <div class="option-list">
+              <label>
+                <span>最小轴线长度</span>
+                <n-input-number v-model:value="jetMinAxisLength" size="small" :min="0" :step="0.5" :precision="2" />
+              </label>
+              <label>
+                <span>最小平均风速</span>
+                <n-input-number v-model:value="jetMinAvgWindSpeed" size="small" :min="0" :step="1" :precision="1" />
+              </label>
+              <label>
+                <span>最小最大风速</span>
+                <n-input-number v-model:value="jetMinMaxWindSpeed" size="small" :min="0" :step="1" :precision="1" />
+              </label>
+              <label>
+                <span>线宽</span>
+                <n-input-number v-model:value="jetLineWidth" size="small" :min="0.8" :max="8" :step="0.2" :precision="1" />
+              </label>
+            </div>
+          </div>
         </section>
 
         <section class="status-panel">

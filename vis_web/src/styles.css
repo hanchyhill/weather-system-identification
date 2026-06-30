@@ -58,6 +58,7 @@ input {
 
 .control-section label,
 .switch-list span,
+.system-config span,
 .status-panel span {
   font-size: 12px;
   color: #526173;
@@ -107,6 +108,7 @@ input {
 }
 
 .switch-list,
+.system-config,
 .status-panel {
   display: grid;
   gap: 10px;
@@ -117,11 +119,74 @@ input {
 }
 
 .switch-list label,
+.option-row,
 .status-panel div {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.system-tab-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid #d5dde7;
+  border-radius: 7px;
+  background: #eef3f7;
+}
+
+.system-tab-list button {
+  min-width: 0;
+  min-height: 30px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #526173;
+  cursor: pointer;
+}
+
+.system-tab-list button.active {
+  background: #1f7a8c;
+  color: #fff;
+}
+
+.tab-panel,
+.option-list {
+  display: grid;
+  gap: 10px;
+}
+
+.option-list label {
+  display: grid;
+  grid-template-columns: minmax(92px, 1fr) minmax(112px, 128px);
+  align-items: center;
+  gap: 10px;
+}
+
+.option-list label > span,
+.option-row > span {
+  min-width: 0;
+}
+
+.filter-grid {
+  display: grid;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.filter-grid label {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.shear-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
 }
 
 .status-panel strong {
