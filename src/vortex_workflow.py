@@ -24,29 +24,48 @@ from vortex_tracker import run_tracking_workflow
 from vortex_warm_core import run_warm_core_identification
 
 
-def _completed_fc_hours(summary: list[dict], output_root: str | Path, init_time: str) -> list[str]:
-    """Return forecast hours with completed/readable 850 hPa center output."""
-    completed = []
+def _new_center_fc_hours(summary: list[dict], output_root: str | Path, init_time: str) -> list[str]:
+    """Return forecast hours with newly generated 850 hPa center output."""
+    generated = []
     for item in summary:
         fc_hour = item.get("fc_hour")
         level = item.get("level")
         if fc_hour is None or level != 850:
             continue
-        if item.get("status") == "completed" and center_json_path(output_root, init_time, fc_hour, 850).exists():
-            completed.append(fc_hour)
-    return normalize_fc_hours(completed)
+        if item.get("generated") and center_json_path(output_root, init_time, fc_hour, 850).exists():
+            generated.append(fc_hour)
+    return normalize_fc_hours(generated)
 
 
-def _completed_warm_fc_hours(summary: list[dict], output_root: str | Path, init_time: str) -> list[str]:
-    """Return forecast hours with completed/readable warm-core output."""
-    completed = []
+def _new_warm_fc_hours(summary: list[dict], output_root: str | Path, init_time: str) -> list[str]:
+    """Return forecast hours with newly generated warm-core output."""
+    generated = []
     for item in summary:
         fc_hour = item.get("fc_hour")
         if fc_hour is None:
             continue
-        if item.get("status") == "completed" and warm_json_path(output_root, init_time, fc_hour).exists():
-            completed.append(fc_hour)
-    return normalize_fc_hours(completed)
+        if item.get("generated") and warm_json_path(output_root, init_time, fc_hour).exists():
+            generated.append(fc_hour)
+    return normalize_fc_hours(generated)
+
+
+def _ready_tracking_fc_hours(output_root: str | Path, init_time: str, fc_hours: Iterable[int | str]) -> list[str]:
+    """Return requested forecast hours with both center and warm-core JSON files ready."""
+    ready = []
+    for fc_hour in normalize_fc_hours(fc_hours):
+        if (
+            center_json_path(output_root, init_time, fc_hour, 850).exists()
+            and warm_json_path(output_root, init_time, fc_hour).exists()
+        ):
+            ready.append(fc_hour)
+    return ready
+
+
+def _collect_files(summary: list[dict], key: str) -> list[str]:
+    files = []
+    for item in summary:
+        files.extend(item.get(key, []))
+    return files
 
 
 def run_vortex_workflow(
@@ -91,18 +110,33 @@ def run_vortex_workflow(
             save_image=save_center_image,
             smooth_threshold=smooth_threshold,
             show_progress=show_progress,
+            skip_existing=True,
         )
         center_summary.extend(result)
 
-    center_ready_fc_hours = _completed_fc_hours(center_summary, output_root, init_time)
+    center_new_fc_hours = _new_center_fc_hours(center_summary, output_root, init_time)
+    center_generated_files = _collect_files(center_summary, "generated_files")
+    center_skipped_files = _collect_files(center_summary, "skipped_files")
     if show_progress:
-        print(f"Center stage ready 850hPa hours: {len(center_ready_fc_hours)}")
+        print(
+            f"Center stage generated files: {len(center_generated_files)}, "
+            f"skipped existing files: {len(center_skipped_files)}"
+        )
+        if center_skipped_files:
+            print("Skipped existing center JSON files:")
+            for path in center_skipped_files:
+                print(f"  {path}")
+        if center_generated_files:
+            print("Generated center JSON files:")
+            for path in center_generated_files:
+                print(f"  {path}")
+        print(f"New 850hPa center hours for warm-core stage: {len(center_new_fc_hours)}")
 
     warm_summary = []
-    if center_ready_fc_hours:
-        for index, fc_hour in enumerate(center_ready_fc_hours, start=1):
+    if center_new_fc_hours:
+        for index, fc_hour in enumerate(center_new_fc_hours, start=1):
             if show_progress:
-                print(f"[warm-core {index}/{len(center_ready_fc_hours)}] init={init_time} fc={fc_hour}")
+                print(f"[warm-core {index}/{len(center_new_fc_hours)}] init={init_time} fc={fc_hour}")
             result = run_warm_core_identification(
                 init_time=init_time,
                 fc_hours=[fc_hour],
@@ -113,29 +147,50 @@ def run_vortex_workflow(
                 show_progress=show_progress,
             )
             warm_summary.extend(result)
+    elif show_progress:
+        print("Skip warm-core stage: no newly generated 850hPa center JSON files.")
 
-    warm_ready_fc_hours = _completed_warm_fc_hours(warm_summary, output_root, init_time)
+    warm_new_fc_hours = _new_warm_fc_hours(warm_summary, output_root, init_time)
+    warm_generated_files = _collect_files(warm_summary, "generated_files")
     if show_progress:
-        print(f"Warm-core stage ready hours: {len(warm_ready_fc_hours)}")
+        print(f"Warm-core stage generated files: {len(warm_generated_files)}")
+        if warm_generated_files:
+            print("Generated warm-core JSON files:")
+            for path in warm_generated_files:
+                print(f"  {path}")
 
     tracking_summary = None
-    if warm_ready_fc_hours:
+    tracking_ready_fc_hours = _ready_tracking_fc_hours(output_root, init_time, fc_hours)
+    tracking_skipped = False
+    if warm_new_fc_hours:
+        if show_progress:
+            print(
+                "New warm-core files detected; rerun tracker over all ready "
+                f"requested hours: {len(tracking_ready_fc_hours)}"
+            )
         tracking_summary = run_tracking_workflow(
             init_time=init_time,
-            fc_hours=warm_ready_fc_hours,
+            fc_hours=tracking_ready_fc_hours,
             output_root=output_root,
             save_image=save_track_image,
             area=area,
             show_progress=show_progress,
         )
-    elif show_progress:
-        print("Skip tracking: no warm-core JSON files are ready.")
+    else:
+        tracking_skipped = True
+        if show_progress:
+            print("Skip tracking: no newly generated warm-core JSON files.")
 
     return {
         "init_time": init_time,
         "requested_fc_hours": fc_hours,
-        "center_ready_fc_hours": center_ready_fc_hours,
-        "warm_ready_fc_hours": warm_ready_fc_hours,
+        "center_new_fc_hours": center_new_fc_hours,
+        "center_generated_files": center_generated_files,
+        "center_skipped_files": center_skipped_files,
+        "warm_new_fc_hours": warm_new_fc_hours,
+        "warm_generated_files": warm_generated_files,
+        "tracking_ready_fc_hours": tracking_ready_fc_hours,
+        "tracking_skipped": tracking_skipped,
         "center_summary": center_summary,
         "warm_summary": warm_summary,
         "tracking_summary": tracking_summary,

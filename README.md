@@ -379,7 +379,12 @@ uv run python src/vortex_workflow.py --init-time 2026062900
 
 这套流程读取TDS NetCDF数据，不依赖 `ifs/` 目录中的GRIB、SQLite和文件清单流程。默认数据源为 `ecmwfthin`，默认区域为 `90-180E, 0-40N`，默认输出目录为 `data/{init_time}/vortex_*`。
 
-`vortex_workflow.py` 会按时效逐个执行中心识别；只有已经成功产出850hPa中心JSON的时效才会进入暖心识别，只有已经成功产出暖心JSON的时效才会进入追踪，避免某个未来时效未更新时阻断全部流程。
+`vortex_workflow.py` 会按时效逐个执行中心识别，并遵循增量更新规则：
+
+- 如果某个 `vortex_center` JSON 已存在，中心识别会跳过该文件，并在终端打印跳过清单。
+- 暖心识别只处理本次新生成的 `850hPa` 中心JSON。
+- 如果暖心识别本次生成了新JSON，则追踪阶段会对本次请求范围内所有已具备 `center + warm_core` JSON 的时效重新追踪。
+- 如果本次没有新生成暖心JSON，则跳过追踪，并在终端打印提示。
 
 ### 运行中心识别
 

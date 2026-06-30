@@ -20,7 +20,7 @@ from vortex_common import (  # noqa: E402
     warm_json_path,
     write_json,
 )
-from vortex_center import build_center_records  # noqa: E402
+from vortex_center import build_center_records, run_center_identification  # noqa: E402
 from vortex_workflow import run_vortex_workflow  # noqa: E402
 from vortex_tracker import (  # noqa: E402
     VortexPreflightError,
@@ -100,13 +100,34 @@ class VortexTrackerTests(unittest.TestCase):
 
 
 class VortexWorkflowTests(unittest.TestCase):
-    def test_wrapper_tracks_only_warm_ready_hours(self):
+    def test_center_identification_skips_existing_json(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch("vortex_center.read_wind_pair") as read_wind_mock:
+            init_time = "2026062900"
+            existing_path = center_json_path(tmpdir, init_time, "000", 850)
+            write_json(existing_path, [])
+
+            summary = run_center_identification(
+                init_time=init_time,
+                fc_hours=["000"],
+                levels=[850],
+                output_root=tmpdir,
+                show_progress=False,
+            )
+
+        read_wind_mock.assert_not_called()
+        self.assertEqual(summary[0]["status"], "skipped")
+        self.assertFalse(summary[0]["generated"])
+        self.assertEqual(summary[0]["skipped_files"], [str(existing_path)])
+
+    def test_wrapper_reruns_tracker_for_all_ready_hours_after_new_warm_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             init_time = "2026062900"
+            write_json(center_json_path(tmpdir, init_time, "000", 850), [])
+            write_json(warm_json_path(tmpdir, init_time, "000"), [])
 
             def fake_center(**kwargs):
                 fc_hour = kwargs["fc_hours"][0]
-                if fc_hour == "000":
+                if fc_hour == "006":
                     write_json(center_json_path(tmpdir, init_time, fc_hour, 850), [])
                     return [
                         {
@@ -114,6 +135,9 @@ class VortexWorkflowTests(unittest.TestCase):
                             "fc_hour": fc_hour,
                             "level": 850,
                             "status": "completed",
+                            "generated": True,
+                            "generated_files": [str(center_json_path(tmpdir, init_time, fc_hour, 850))],
+                            "skipped_files": [],
                         }
                     ]
                 return [
@@ -121,7 +145,10 @@ class VortexWorkflowTests(unittest.TestCase):
                         "init_time": init_time,
                         "fc_hour": fc_hour,
                         "level": 850,
-                        "status": "aborted",
+                        "status": "skipped",
+                        "generated": False,
+                        "generated_files": [],
+                        "skipped_files": [str(center_json_path(tmpdir, init_time, fc_hour, 850))],
                     }
                 ]
 
@@ -133,6 +160,8 @@ class VortexWorkflowTests(unittest.TestCase):
                         "init_time": init_time,
                         "fc_hour": fc_hour,
                         "status": "completed",
+                        "generated": True,
+                        "generated_files": [str(warm_json_path(tmpdir, init_time, fc_hour))],
                     }
                 ]
 
@@ -152,10 +181,47 @@ class VortexWorkflowTests(unittest.TestCase):
                     show_progress=False,
                 )
 
-            self.assertEqual(summary["center_ready_fc_hours"], ["000"])
-            self.assertEqual(summary["warm_ready_fc_hours"], ["000"])
+            self.assertEqual(summary["center_new_fc_hours"], ["006"])
+            self.assertEqual(summary["warm_new_fc_hours"], ["006"])
+            self.assertEqual(summary["tracking_ready_fc_hours"], ["000", "006"])
             tracking_mock.assert_called_once()
-            self.assertEqual(tracking_mock.call_args.kwargs["fc_hours"], ["000"])
+            self.assertEqual(tracking_mock.call_args.kwargs["fc_hours"], ["000", "006"])
+
+    def test_wrapper_skips_warm_and_tracking_when_no_new_center_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            init_time = "2026062900"
+            write_json(center_json_path(tmpdir, init_time, "000", 850), [])
+            write_json(warm_json_path(tmpdir, init_time, "000"), [])
+
+            def fake_center(**kwargs):
+                fc_hour = kwargs["fc_hours"][0]
+                return [
+                    {
+                        "init_time": init_time,
+                        "fc_hour": fc_hour,
+                        "level": 850,
+                        "status": "skipped",
+                        "generated": False,
+                        "generated_files": [],
+                        "skipped_files": [str(center_json_path(tmpdir, init_time, fc_hour, 850))],
+                    }
+                ]
+
+            with patch("vortex_workflow.run_center_identification", side_effect=fake_center), \
+                    patch("vortex_workflow.run_warm_core_identification") as warm_mock, \
+                    patch("vortex_workflow.run_tracking_workflow") as tracking_mock:
+                summary = run_vortex_workflow(
+                    init_time=init_time,
+                    fc_hours=["000"],
+                    levels=[850],
+                    output_root=tmpdir,
+                    show_progress=False,
+                )
+
+            warm_mock.assert_not_called()
+            tracking_mock.assert_not_called()
+            self.assertTrue(summary["tracking_skipped"])
+            self.assertEqual(summary["warm_new_fc_hours"], [])
 
 
 class TroughUpdateTests(unittest.TestCase):

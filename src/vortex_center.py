@@ -327,9 +327,28 @@ def process_one_level(
     save_json: bool,
     save_image: bool,
     smooth_threshold: float,
+    skip_existing: bool = True,
 ) -> dict:
     """Process one forecast hour and pressure level."""
     fc_str = format_fc_hour(fc_hour)
+    json_path = center_json_path(output_root, init_time, fc_str, level)
+    image_path = center_dir(output_root, init_time) / f"vortex_center_{init_time}_{fc_str}_{int(level)}hPa.png"
+    if save_json and skip_existing and json_path.exists():
+        return {
+            "init_time": init_time,
+            "fc_hour": fc_str,
+            "level": int(level),
+            "center_count": None,
+            "json_path": str(json_path),
+            "image_path": str(image_path) if save_image and image_path.exists() else None,
+            "status": "skipped",
+            "reason": "center JSON already exists",
+            "generated": False,
+            "skipped": True,
+            "generated_files": [],
+            "skipped_files": [str(json_path)],
+        }
+
     uwnd, vwnd = read_wind_pair(init_time, fc_str, level, area, source=source)
     centers = detect_vortex_centers(uwnd, vwnd, smooth_threshold=smooth_threshold)
 
@@ -353,8 +372,6 @@ def process_one_level(
         source=source,
     )
 
-    json_path = center_json_path(output_root, init_time, fc_str, level)
-    image_path = center_dir(output_root, init_time) / f"vortex_center_{init_time}_{fc_str}_{int(level)}hPa.png"
     if save_json:
         write_json(json_path, records)
     if save_image:
@@ -373,6 +390,10 @@ def process_one_level(
         "json_path": str(json_path) if save_json else None,
         "image_path": str(image_path) if save_image else None,
         "status": "completed",
+        "generated": bool(save_json),
+        "skipped": False,
+        "generated_files": [str(json_path)] if save_json else [],
+        "skipped_files": [],
     }
 
 
@@ -387,6 +408,7 @@ def run_center_identification(
     save_image: bool = False,
     smooth_threshold: float = 1.0,
     show_progress: bool = True,
+    skip_existing: bool = True,
 ) -> list[dict]:
     """Run center identification for many forecast hours and levels."""
     if init_time is None:
@@ -404,19 +426,21 @@ def run_center_identification(
             if show_progress:
                 print(f"[{task_index}/{total}] center init={init_time} fc={fc_str} level={level}")
             try:
-                summary.append(
-                    process_one_level(
-                        init_time=init_time,
-                        fc_hour=fc_str,
-                        level=level,
-                        area=area,
-                        source=source,
-                        output_root=output_root,
-                        save_json=save_json,
-                        save_image=save_image,
-                        smooth_threshold=smooth_threshold,
-                    )
+                item = process_one_level(
+                    init_time=init_time,
+                    fc_hour=fc_str,
+                    level=level,
+                    area=area,
+                    source=source,
+                    output_root=output_root,
+                    save_json=save_json,
+                    save_image=save_image,
+                    smooth_threshold=smooth_threshold,
+                    skip_existing=skip_existing,
                 )
+                summary.append(item)
+                if show_progress and item.get("status") == "skipped":
+                    print(f"  skipped existing center JSON: {item.get('json_path')}")
             except VortexDataError as exc:
                 item = {
                     "init_time": init_time,
@@ -427,6 +451,10 @@ def run_center_identification(
                     "image_path": None,
                     "status": "aborted",
                     "error": str(exc),
+                    "generated": False,
+                    "skipped": False,
+                    "generated_files": [],
+                    "skipped_files": [],
                 }
                 summary.append(item)
                 if show_progress:

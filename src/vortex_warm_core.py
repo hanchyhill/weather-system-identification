@@ -123,6 +123,8 @@ def process_warm_core_hour(
             "input_path": str(input_path),
             "json_path": str(output_path),
             "status": "completed",
+            "generated": True,
+            "generated_files": [str(output_path)],
         }
 
     temp_fields = read_temperature_fields(
@@ -143,6 +145,8 @@ def process_warm_core_hour(
         "input_path": str(input_path),
         "json_path": str(output_path),
         "status": "completed",
+        "generated": True,
+        "generated_files": [str(output_path)],
     }
 
 
@@ -188,6 +192,8 @@ def run_warm_core_identification(
                     "json_path": None,
                     "status": "missing_center",
                     "error": str(exc),
+                    "generated": False,
+                    "generated_files": [],
                 }
             )
             if show_progress:
@@ -204,6 +210,8 @@ def run_warm_core_identification(
                     "json_path": None,
                     "status": "aborted",
                     "error": str(exc),
+                    "generated": False,
+                    "generated_files": [],
                 }
             )
             if show_progress:
