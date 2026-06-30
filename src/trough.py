@@ -1,3 +1,4 @@
+import argparse
 import json
 from pathlib import Path
 
@@ -822,7 +823,8 @@ def get_multi_fc_trough_by_init_time(init_time=None, fc_hours=TIME_STR_LIST_ECMW
                                      config=TROUGH_CONFIG,
                                      save_image=True,
                                      save_json=True,
-                                     show_progress=True):
+                                     show_progress=True,
+                                     stop_on_error=False):
     """
     根据初始时间批量生成多个预报时效和多个层次的槽线图像与JSON数据。
 
@@ -831,6 +833,7 @@ def get_multi_fc_trough_by_init_time(init_time=None, fc_hours=TIME_STR_LIST_ECMW
     - save_image: bool, 是否保存PNG图像
     - save_json: bool, 是否保存JSON槽线数据
     - show_progress: bool, 是否打印运行进度
+    - stop_on_error: bool, 任一时效或层次读取失败时是否停止；默认继续尝试后续任务
 
     返回:
     - list: 每个预报时效和层次的输出摘要
@@ -910,7 +913,7 @@ def get_multi_fc_trough_by_init_time(init_time=None, fc_hours=TIME_STR_LIST_ECMW
                 message = str(exc)
                 if show_progress:
                     print(
-                        f'  Abort trough analysis: init_time={init_time}, '
+                        f'  Failed trough analysis: init_time={init_time}, '
                         f'fc_hour={fc_str}, target_lev={target_lev}hPa, error={message}'
                     )
                 output_summary.append({
@@ -923,7 +926,9 @@ def get_multi_fc_trough_by_init_time(init_time=None, fc_hours=TIME_STR_LIST_ECMW
                     'status': 'aborted',
                     'error': message,
                 })
-                return output_summary
+                if stop_on_error:
+                    return output_summary
+                continue
 
             if save_image and not image_exists:
                 fig.savefig(image_path, bbox_inches='tight')
@@ -966,17 +971,84 @@ def get_multi_fc_trough_by_init_time(init_time=None, fc_hours=TIME_STR_LIST_ECMW
     return output_summary
 
 
-def main(init_time=None, save_image=True, save_json=True, show_progress=True):
+def update_latest_trough_outputs(fc_hours=TIME_STR_LIST_ECMWFTHIN,
+                                 target_levs=TARGET_LEV_LIST,
+                                 output_root='./data',
+                                 source=DEFAULT_SOURCE,
+                                 save_image=True,
+                                 save_json=True,
+                                 show_progress=True,
+                                 stop_on_error=False):
+    """
+    自动查找最新ECMWF起报时次，并逐个预报时效更新槽线输出。
+
+    已存在的目标输出会跳过；某个时效或层次未更新时默认记录失败并继续。
+    """
+    return get_multi_fc_trough_by_init_time(
+        init_time=calLatestBaseTime(),
+        fc_hours=fc_hours,
+        target_levs=target_levs,
+        output_root=output_root,
+        source=source,
+        save_image=save_image,
+        save_json=save_json,
+        show_progress=show_progress,
+        stop_on_error=stop_on_error,
+    )
+
+
+def main(init_time=None, fc_hours=TIME_STR_LIST_ECMWFTHIN,
+         target_levs=TARGET_LEV_LIST, output_root='./data',
+         source=DEFAULT_SOURCE, save_image=True, save_json=True,
+         show_progress=True, stop_on_error=False):
     """
     批量生成槽线结果。init_time为None时默认使用最新ECMWF起报时次。
     """
     return get_multi_fc_trough_by_init_time(
         init_time=init_time,
+        fc_hours=fc_hours,
+        target_levs=target_levs,
+        output_root=output_root,
+        source=source,
         save_image=save_image,
         save_json=save_json,
         show_progress=show_progress,
+        stop_on_error=stop_on_error,
     )
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='批量更新槽线识别输出。')
+    parser.add_argument(
+        '--init-time',
+        default=None,
+        help='起报时次，格式YYYYMMDDHH；不传时自动使用最新ECMWF起报时次。',
+    )
+    parser.add_argument('--fc-hours', nargs='+', default=TIME_STR_LIST_ECMWFTHIN)
+    parser.add_argument('--target-levs', nargs='+', type=int, default=TARGET_LEV_LIST)
+    parser.add_argument('--output-root', default='./data')
+    parser.add_argument('--source', default=DEFAULT_SOURCE)
+    parser.add_argument('--save-image', dest='save_image', action='store_true', default=True)
+    parser.add_argument('--no-save-image', dest='save_image', action='store_false')
+    parser.add_argument('--save-json', dest='save_json', action='store_true', default=True)
+    parser.add_argument('--no-save-json', dest='save_json', action='store_false')
+    parser.add_argument(
+        '--stop-on-error',
+        action='store_true',
+        help='任一时效或层次失败时立即停止；默认记录失败并继续后续任务。',
+    )
+    return parser.parse_args()
+
+
 if __name__ == '__main__':
-    main()
+    args = parse_args()
+    main(
+        init_time=args.init_time,
+        fc_hours=args.fc_hours,
+        target_levs=args.target_levs,
+        output_root=args.output_root,
+        source=args.source,
+        save_image=args.save_image,
+        save_json=args.save_json,
+        stop_on_error=args.stop_on_error,
+    )

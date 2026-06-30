@@ -1,0 +1,24 @@
+{
+  "name": "weather-system-visualization",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "@vitejs/plugin-vue": "latest",
+    "d3": "latest",
+    "d3-geo": "latest",
+    "d3-zoom": "latest",
+    "lucide-vue-next": "latest",
+    "naive-ui": "latest",
+    "pinia": "latest",
+    "topojson-client": "latest",
+    "vite": "latest",
+    "vue": "latest"
+  },
+  "devDependencies": {}
+}

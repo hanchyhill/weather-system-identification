@@ -21,6 +21,17 @@
   - 基于ECMWF热带气旋追踪算法
   - 提供台风位置的精确定位功能
 
+### 3. 涡旋中心、暖心与追踪 (Vortex Identification)
+- **文件位置**:
+  - `src/vortex_center.py`
+  - `src/vortex_warm_core.py`
+  - `src/vortex_tracker.py`
+- **功能描述**:
+  - 从TDS NetCDF风场中识别多层涡旋中心
+  - 对850hPa中心使用10m风场进行地面中心校正，并计算100km内最大地面风速
+  - 基于200、300、400、500hPa平均温度场识别暖心结构
+  - 将逐时效暖心涡旋中心追踪为连续轨迹
+
 ## 技术特点
 
 ### 数据源
@@ -36,6 +47,7 @@
   - `cartopy`: 地理空间数据可视化
   - `matplotlib`: 数据可视化
   - `numpy`: 数值计算
+  - `scikit-learn`: DBSCAN聚类
 
 ### 数据处理能力
 - 支持多种气象要素：温度、湿度、风速、位势高度、海平面气压
@@ -47,7 +59,13 @@
 ```
 weather-system-identification/
 ├── src/
-│   ├── trough.ipynb              # 槽线检测算法
+│   ├── trough.py                 # 槽线检测可复用函数
+│   ├── trough.ipynb              # 槽线检测Notebook
+│   ├── vortex_common.py          # 涡旋算法通用工具
+│   ├── vortex_center.py          # 涡旋中心识别脚本
+│   ├── vortex_warm_core.py       # 暖心识别脚本
+│   ├── vortex_tracker.py         # 涡旋追踪脚本
+│   ├── vortex_workflow.py        # 涡旋三段式总入口脚本
 │   └── ty-locator/
 │       └── locator.ipynb         # 台风定位算法
 ├── 20228-tropical-cyclone-activities-ecmwf.pdf     # 热带气旋活动研究文档
@@ -65,8 +83,10 @@ weather-system-identification/
 
 ### 安装依赖
 ```bash
-pip install xarray metpy cartopy matplotlib numpy pint arrow
+uv sync
 ```
+
+如果不使用 `uv`，也可以按 `pyproject.toml` 中的依赖手动安装。
 
 ### 运行示例
 1. 启动Jupyter Notebook：
@@ -84,6 +104,17 @@ pip install xarray metpy cartopy matplotlib numpy pint arrow
    ```bash
    # 在Jupyter中打开
    src/ty-locator/locator.ipynb
+   ```
+
+4. 运行涡旋中心、暖心与追踪脚本：
+   ```bash
+   # 一键执行中心识别、暖心识别和追踪
+   uv run python src/vortex_workflow.py --init-time 2026062900
+
+   # 或者分阶段执行
+   uv run python src/vortex_center.py --init-time 2026062900 --save-json
+   uv run python src/vortex_warm_core.py --init-time 2026062900
+   uv run python src/vortex_tracker.py --init-time 2026062900
    ```
 
 ## 配置说明
@@ -188,6 +219,242 @@ data/2024061412/trough_data/trough_2024061412_000_500hPa_ecmwf.json
 - `attributes.avg_wind_speed`：槽线沿线平均风速。
 - `attributes.angle`：槽线弯折角度；无法计算时在JSON中为 `null`。
 - `line_id`：当前文件内的槽线序号。
+
+## 涡旋算法运行与输出数据格式
+
+涡旋相关算法由三个可独立运行的脚本组成，推荐按以下顺序执行：
+
+1. `src/vortex_center.py`：识别涡旋中心。
+2. `src/vortex_warm_core.py`：基于850hPa中心结果识别暖心。
+3. `src/vortex_tracker.py`：基于暖心结果追踪连续涡旋路径。
+
+也可以直接使用总入口脚本一次执行三段流程：
+
+```bash
+uv run python src/vortex_workflow.py --init-time 2026062900
+```
+
+这套流程读取TDS NetCDF数据，不依赖 `ifs/` 目录中的GRIB、SQLite和文件清单流程。默认数据源为 `ecmwfthin`，默认区域为 `90-180E, 0-40N`，默认输出目录为 `data/{init_time}/vortex_*`。
+
+`vortex_workflow.py` 会按时效逐个执行中心识别；只有已经成功产出850hPa中心JSON的时效才会进入暖心识别，只有已经成功产出暖心JSON的时效才会进入追踪，避免某个未来时效未更新时阻断全部流程。
+
+### 运行中心识别
+
+```bash
+uv run python src/vortex_center.py --init-time 2026062900 --save-json
+```
+
+常用参数：
+
+- `--init-time 2026062900`：起报时次，格式为 `YYYYMMDDHH`；不传时使用 `calLatestBaseTime()` 自动计算。
+- `--fc-hours 000 006 012`：指定预报时效；默认处理内置的ECMWF常用时效清单。
+- `--levels 200 500 700 850 925 950`：指定识别气压层，单位 hPa。
+- `--area 90 180 0 40`：指定区域，顺序为 `西 东 南 北`。
+- `--source ecmwfthin`：TDS数据源。
+- `--output-root data`：输出根目录。
+- `--save-image`：额外输出PNG图像。
+- `--no-save-json`：只运行识别，不写JSON。
+
+中心识别输出路径：
+
+```text
+data/{init_time}/vortex_centers/vortex_center_{init_time}_{fc_hour}_{level}hPa.json
+data/{init_time}/vortex_centers/vortex_center_{init_time}_{fc_hour}_{level}hPa.png
+```
+
+其中PNG只有传入 `--save-image` 时才会生成。
+
+中心识别JSON为数组，每个元素表示一个涡旋候选中心：
+
+```json
+[
+  {
+    "model": "ecmwfthin",
+    "init_time": "2026-06-29 00:00:00",
+    "fore_time": "2026-06-29 06:00:00",
+    "fc_hour": "006",
+    "step": 6,
+    "level": 850,
+    "lat": 18.25,
+    "lon": 128.5,
+    "vort": 0.000052,
+    "vmax": 23.4,
+    "vmax_lat": 18.5,
+    "vmax_lon": 128.75,
+    "is_surface_center": 1,
+    "surface_center_distance": 42.6
+  }
+]
+```
+
+字段说明：
+
+- `model`：数据源，默认 `ecmwfthin`。
+- `init_time`：起报时间，格式为 `YYYY-MM-DD HH:MM:SS`。
+- `fore_time`：预报有效时间，格式为 `YYYY-MM-DD HH:MM:SS`。
+- `fc_hour`：三位预报时效字符串，例如 `000`、`006`、`024`。
+- `step`：数值型预报时效，单位小时。
+- `level`：气压层，单位 hPa。
+- `lat` / `lon`：涡旋中心纬度、经度。
+- `vort`：中心附近相对涡度，单位 `s^-1`。
+- `vmax`：850hPa结果中，中心100km内最大10m风速，单位 `m/s`；非850hPa层通常为 `null`。
+- `vmax_lat` / `vmax_lon`：最大10m风速位置。
+- `is_surface_center`：850hPa中心是否被200km内的10m风场中心校正，`1` 表示已校正，`0` 表示未校正。
+- `surface_center_distance`：850hPa候选中心到最近10m风场中心的距离，单位 km。
+
+### 运行暖心识别
+
+暖心识别读取中心识别阶段的850hPa JSON：
+
+```bash
+uv run python src/vortex_warm_core.py --init-time 2026062900
+```
+
+常用参数：
+
+- `--fc-hours 000 006 012`：只处理指定时效。
+- `--area 90 180 0 40`：温度场读取区域。
+- `--source ecmwfthin`：TDS数据源。
+- `--output-root data`：输出根目录。
+- `--warm-levels 200 300 400 500`：参与平均的温度层。
+
+暖心识别输出路径：
+
+```text
+data/{init_time}/vortex_warm_core/vortex_warm_core_{init_time}_{fc_hour}_850hPa.json
+```
+
+暖心识别JSON同样为数组，保留中心识别字段，并增加暖心诊断字段：
+
+```json
+[
+  {
+    "model": "ecmwfthin",
+    "init_time": "2026-06-29 00:00:00",
+    "fore_time": "2026-06-29 06:00:00",
+    "fc_hour": "006",
+    "step": 6,
+    "level": 850,
+    "lat": 18.25,
+    "lon": 128.5,
+    "vort": 0.000052,
+    "vmax": 23.4,
+    "warm": true,
+    "warm_core": true,
+    "warm_slope": true,
+    "max_temp": 266.2,
+    "max_temp_lat": 18.75,
+    "max_temp_lon": 128.25,
+    "distance_to_max": 62.1,
+    "center_temp": 265.9,
+    "temp_north": 263.1,
+    "temp_south": 264.0,
+    "temp_east": 263.6,
+    "temp_west": 263.8
+  }
+]
+```
+
+新增字段说明：
+
+- `warm`：最终暖心判定，`warm_core` 和 `warm_slope` 同时为 `true` 时为 `true`。
+- `warm_core`：中心附近5度范围内的平均温度最大点距离中心是否小于220km。
+- `warm_slope`：中心温度是否高于东、西、南、北8度处温度。
+- `max_temp`：中心附近5度范围内的最大平均温度，单位 K。
+- `max_temp_lat` / `max_temp_lon`：最大平均温度点位置。
+- `distance_to_max`：中心到最大平均温度点的距离，单位 km。
+- `center_temp`：中心位置平均温度，单位 K。
+- `temp_north` / `temp_south` / `temp_east` / `temp_west`：中心北、南、东、西8度处平均温度，单位 K。
+
+### 运行涡旋追踪
+
+追踪脚本读取暖心识别输出，只追踪850hPa和地面校正后的中心结果。运行前会检查指定起报和时效是否同时具备中心JSON和暖心JSON；空中心数组 `[]` 也视为数据已就绪，但缺文件或JSON读取失败会直接停止。
+
+```bash
+uv run python src/vortex_tracker.py --init-time 2026062900
+```
+
+常用参数：
+
+- `--fc-hours 000 006 012 018 024`：指定参与追踪的时效。
+- `--output-root data`：输出根目录。
+- `--save-image`：额外输出暖心轨迹PNG。
+- `--area 90 180 0 40`：轨迹图范围。
+
+追踪输出路径：
+
+```text
+data/{init_time}/vortex_tracks/tc_tracking_results_processed_{init_time}.json
+data/{init_time}/vortex_tracks/tc_tracking_plot_processed_{init_time}.png
+```
+
+其中PNG只有传入 `--save-image` 时才会生成。
+
+追踪JSON结构：
+
+```json
+{
+  "total_tracks": 1,
+  "tracks": [
+    {
+      "model": "ecmwfthin",
+      "init_time": "2026-06-29 00:00:00",
+      "lon": 128.5,
+      "lat": 18.25,
+      "id": 1,
+      "GZ_number": "2026062900_001",
+      "seq_number": "001",
+      "max_wind": 35.2,
+      "warm": true,
+      "track": [
+        {
+          "model": "ecmwfthin",
+          "init_time": "2026-06-29 00:00:00",
+          "fore_time": "2026-06-29 06:00:00",
+          "fc_hour": "006",
+          "step": 6,
+          "level": 850,
+          "lat": 18.25,
+          "lon": 128.5,
+          "vmax": 23.4,
+          "warm": true
+        }
+      ]
+    }
+  ]
+}
+```
+
+字段说明：
+
+- `total_tracks`：输出轨迹数量。
+- `tracks`：轨迹对象列表。
+- `model`：数据源。
+- `init_time`：轨迹起报时间。
+- `lon` / `lat`：轨迹首点位置。
+- `id`：追踪过程中分配的内部轨迹ID。
+- `GZ_number`：按起报时次和强度排序生成的轨迹编号。
+- `seq_number`：同一起报内的三位序号。
+- `max_wind`：轨迹所有点中的最大 `vmax`，单位 `m/s`。
+- `warm`：轨迹中任一点为暖心时，该轨迹为 `true`。
+- `track`：轨迹点列表，点内字段来自暖心识别JSON，并保留 `fore_time`、`fc_hour`、`step`、`lat`、`lon`、`vmax`、`warm` 等关键字段。
+
+### 推荐验证命令
+
+修改涡旋相关代码后，建议至少运行：
+
+```bash
+uv run python -m py_compile src/vortex_common.py src/vortex_center.py src/vortex_warm_core.py src/vortex_tracker.py
+uv run python -m unittest discover
+```
+
+如果TDS可访问，可用短时效子集做端到端检查：
+
+```bash
+uv run python src/vortex_center.py --init-time 2026062900 --fc-hours 000 006 --levels 850
+uv run python src/vortex_warm_core.py --init-time 2026062900 --fc-hours 000 006
+uv run python src/vortex_tracker.py --init-time 2026062900 --fc-hours 000 006
+```
 
 ## 学术背景
 
