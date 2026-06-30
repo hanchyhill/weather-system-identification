@@ -182,3 +182,4 @@ plot_lines_with_direction(lines_smooth, uwnd, vwnd, fill=False, same_color=True)
 5. web交互实装[in progress]。
 6. 常用气象图的SVG导出[in progress]。[draw_img](src/draw/generate_svg_layers.py)
 7. 急流轴实现[pending]。
+8. ecmwf_s2d 数据兼容性方案。
