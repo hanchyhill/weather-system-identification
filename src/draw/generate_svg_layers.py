@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -385,6 +387,40 @@ def smooth_array(data: xr.DataArray, sigma: float) -> xr.DataArray:
     return xr.DataArray(values, coords=data.coords, dims=data.dims, attrs=data.attrs)
 
 
+def five_point_smooth(data: xr.DataArray) -> xr.DataArray:
+    lat_name = coord_name(data, "lat")
+    lon_name = coord_name(data, "lon")
+    if lat_name not in data.dims or lon_name not in data.dims:
+        return data
+
+    values = np.asarray(data.values, dtype=float)
+    if data.sizes[lat_name] < 3 or data.sizes[lon_name] < 3:
+        return data
+
+    smoothed = values.copy()
+    lat_axis = data.get_axis_num(lat_name)
+    lon_axis = data.get_axis_num(lon_name)
+    source = np.moveaxis(values, (lat_axis, lon_axis), (-2, -1))
+    target = np.moveaxis(smoothed, (lat_axis, lon_axis), (-2, -1))
+    stencil = (
+        source[..., 1:-1, 1:-1],
+        source[..., :-2, 1:-1],
+        source[..., 2:, 1:-1],
+        source[..., 1:-1, :-2],
+        source[..., 1:-1, 2:],
+    )
+    value_sum = np.zeros_like(stencil[0], dtype=float)
+    value_count = np.zeros_like(stencil[0], dtype=float)
+    for item in stencil:
+        finite = np.isfinite(item)
+        value_sum += np.where(finite, item, 0.0)
+        value_count += finite
+    averaged = np.full_like(value_sum, np.nan, dtype=float)
+    np.divide(value_sum, value_count, out=averaged, where=value_count > 0)
+    target[..., 1:-1, 1:-1] = averaged
+    return xr.DataArray(smoothed, coords=data.coords, dims=data.dims, attrs=data.attrs)
+
+
 def lon_lat_values(data: xr.DataArray) -> tuple[np.ndarray, np.ndarray]:
     return (
         np.asarray(data[coord_name(data, "lon")].values, dtype=float),
@@ -427,8 +463,9 @@ def draw_hght_contour(
     dpi: int,
 ) -> None:
     fig, ax = setup_axis(bounds, (10, 8), dpi)
-    lon, lat = lon_lat_values(hght)
-    values = np.asarray(hght.values, dtype=float) / 10.0
+    hght_smoothed = five_point_smooth(hght)
+    lon, lat = lon_lat_values(hght_smoothed)
+    values = np.asarray(hght_smoothed.values, dtype=float) / 10.0
     finite = finite_values(values, "Height")
     if level == 500:
         if np.nanmax(finite) > 586:
@@ -604,7 +641,7 @@ def draw_wind_streamline(
 
 def draw_temp_contour(temp: xr.DataArray, bounds: Bounds, output_path: Path, dpi: int) -> None:
     fig, ax = setup_axis(bounds, (10, 8), dpi)
-    temp_c = temperature_celsius(temp)
+    temp_c = five_point_smooth(temperature_celsius(temp))
     lon, lat = lon_lat_values(temp_c)
     finite_values(temp_c, "Temperature")
     ax.contour(
@@ -658,7 +695,7 @@ def draw_rhum_fill(rhum: xr.DataArray, bounds: Bounds, output_path: Path, dpi: i
 
 def draw_mslp_contour(mslp: xr.DataArray, bounds: Bounds, output_path: Path, dpi: int) -> None:
     fig, ax = setup_axis(bounds, (10, 8), dpi)
-    mslp_values = mslp_hpa(mslp)
+    mslp_values = five_point_smooth(mslp_hpa(mslp))
     lon, lat = lon_lat_values(mslp_values)
     values = np.asarray(mslp_values.values, dtype=float)
     levels = contour_levels_from_data(values, 2)
@@ -861,7 +898,9 @@ def log_layer_result(fc_hour: str, level: str | int, layer_type: str, status: st
         print(f"  {status.capitalize()} SVG: {context}, path={output_path}")
 
 
-def generate_upper_air_layers(args, fc_hour: str, level: int, bounds: Bounds, manifest) -> None:
+def generate_upper_air_layers(
+    args, fc_hour: str, level: int, bounds: Bounds, manifest: dict[str, object] | None = None
+) -> list[dict[str, object]]:
     output_root = Path(args.output)
     layer_dir = output_root / args.init_time / fc_hour / str(level)
     common = {
@@ -883,14 +922,17 @@ def generate_upper_air_layers(args, fc_hour: str, level: int, bounds: Bounds, ma
     vort_candidates = [args.vort_var.format(fc_hour=fc_hour), f"vort{fc_hour}", "vort", "vo"]
     rhum_candidates = [args.rhum_var.format(fc_hour=fc_hour), f"rhum{fc_hour}", "rhum", "r"]
 
+    records: list[dict[str, object]] = []
     wind_fields = None
     for layer_type in HIGH_LAYER_TYPES:
         output_path = layer_dir / f"{layer_type}.svg"
         if args.skip_existing and output_path.exists():
-            add_manifest_record(
-                manifest,
-                product_record(args.init_time, fc_hour, level, layer_type, output_path, output_root, bounds, "skipped"),
+            record = product_record(
+                args.init_time, fc_hour, level, layer_type, output_path, output_root, bounds, "skipped"
             )
+            records.append(record)
+            if manifest is not None:
+                add_manifest_record(manifest, record)
             log_layer_result(fc_hour, level, layer_type, "skipped", output_path)
             continue
 
@@ -932,15 +974,19 @@ def generate_upper_air_layers(args, fc_hour: str, level: int, bounds: Bounds, ma
         else:
             log_layer_result(fc_hour, level, layer_type, status, output_path)
 
-        add_manifest_record(
-            manifest,
-            product_record(
-                args.init_time, fc_hour, level, layer_type, output_path, output_root, bounds, status, error
-            ),
+        record = product_record(
+            args.init_time, fc_hour, level, layer_type, output_path, output_root, bounds, status, error
         )
+        records.append(record)
+        if manifest is not None:
+            add_manifest_record(manifest, record)
+
+    return records
 
 
-def generate_surface_layers(args, fc_hour: str, bounds: Bounds, manifest) -> None:
+def generate_surface_layers(
+    args, fc_hour: str, bounds: Bounds, manifest: dict[str, object] | None = None
+) -> list[dict[str, object]]:
     output_root = Path(args.output)
     layer_dir = output_root / args.init_time / fc_hour / "surface"
     common = {
@@ -975,14 +1021,17 @@ def generate_surface_layers(args, fc_hour: str, bounds: Bounds, manifest) -> Non
     mslp_path = default_path(args.mslp_path, args.init_time, args.source, "mslp.nc", args.base_url_template)
     mslp_candidates = [args.mslp_var.format(fc_hour=fc_hour), f"mslp{fc_hour}", "mslp", "msl"]
 
+    records: list[dict[str, object]] = []
     wind_fields = None
     for layer_type in SURFACE_LAYER_TYPES:
         output_path = layer_dir / f"{layer_type}.svg"
         if args.skip_existing and output_path.exists():
-            add_manifest_record(
-                manifest,
-                product_record(args.init_time, fc_hour, "surface", layer_type, output_path, output_root, bounds, "skipped"),
+            record = product_record(
+                args.init_time, fc_hour, "surface", layer_type, output_path, output_root, bounds, "skipped"
             )
+            records.append(record)
+            if manifest is not None:
+                add_manifest_record(manifest, record)
             log_layer_result(fc_hour, "surface", layer_type, "skipped", output_path)
             continue
 
@@ -1015,12 +1064,14 @@ def generate_surface_layers(args, fc_hour: str, bounds: Bounds, manifest) -> Non
         else:
             log_layer_result(fc_hour, "surface", layer_type, status, output_path)
 
-        add_manifest_record(
-            manifest,
-            product_record(
-                args.init_time, fc_hour, "surface", layer_type, output_path, output_root, bounds, status, error
-            ),
+        record = product_record(
+            args.init_time, fc_hour, "surface", layer_type, output_path, output_root, bounds, status, error
         )
+        records.append(record)
+        if manifest is not None:
+            add_manifest_record(manifest, record)
+
+    return records
 
 
 def write_manifest(output_root: Path, init_time: str, manifest: dict[str, object]) -> Path:
@@ -1032,6 +1083,61 @@ def write_manifest(output_root: Path, init_time: str, manifest: dict[str, object
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return manifest_path
+
+
+def default_worker_count() -> int:
+    return max((os.cpu_count() or 1) - 1, 1)
+
+
+def build_generation_jobs(args, fc_hours: list[str]) -> list[tuple[str, str, int | None]]:
+    jobs: list[tuple[str, str, int | None]] = []
+    for fc_hour in fc_hours:
+        if not args.surface_only:
+            for level in args.levels:
+                jobs.append(("upper_air", fc_hour, level))
+        if not args.upper_only:
+            jobs.append(("surface", fc_hour, None))
+    return jobs
+
+
+def run_generation_job(
+    args, bounds: Bounds, job: tuple[str, str, int | None]
+) -> list[dict[str, object]]:
+    layer_group, fc_hour, level = job
+    if layer_group == "upper_air":
+        assert level is not None
+        return generate_upper_air_layers(args, fc_hour, level, bounds)
+    if layer_group == "surface":
+        return generate_surface_layers(args, fc_hour, bounds)
+    raise ValueError(f"Unknown generation job type: {layer_group}")
+
+
+def add_manifest_records(manifest: dict[str, object], records: Iterable[dict[str, object]]) -> None:
+    for record in records:
+        add_manifest_record(manifest, record)
+
+
+def run_generation_jobs(
+    args, fc_hours: list[str], bounds: Bounds, manifest: dict[str, object]
+) -> None:
+    jobs = build_generation_jobs(args, fc_hours)
+    if not jobs:
+        return
+
+    workers = min(args.workers, len(jobs))
+    if workers <= 1:
+        for job in jobs:
+            add_manifest_records(manifest, run_generation_job(args, bounds, job))
+        return
+
+    print(f"Using parallel SVG generation workers: {workers}", flush=True)
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        future_to_job = {
+            executor.submit(run_generation_job, args, bounds, job): job
+            for job in jobs
+        }
+        for future in as_completed(future_to_job):
+            add_manifest_records(manifest, future.result())
 
 
 def parse_args() -> argparse.Namespace:
@@ -1095,6 +1201,12 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Regenerate SVG files even when they already exist.",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=default_worker_count(),
+        help="Parallel worker process count. Defaults to CPU thread count minus 1.",
+    )
     parser.add_argument("--dpi", type=int, default=150)
     parser.add_argument("--skip", type=int, default=8, help="Vector/barb grid skip.")
     parser.add_argument("--sigma", type=float, default=2.0, help="Gaussian smoothing sigma.")
@@ -1105,27 +1217,25 @@ def main() -> None:
     args = parse_args()
     if args.init_time is None:
         args.init_time = calLatestBaseTime()
+    if args.workers < 1:
+        raise ValueError("--workers must be at least 1")
     bounds = Bounds(*args.bounds)
     output_root = Path(args.output)
     fc_hours = [format_fc_hour(fc_hour) for fc_hour in args.fc_hours]
     manifest = load_manifest(output_root, args.init_time, bounds)
     backfilled = backfill_manifest_from_existing_svgs(output_root, args.init_time, bounds, manifest)
     if backfilled:
-        print(f"Backfilled manifest records from existing SVG files: {backfilled}")
+        print(f"Backfilled manifest records from existing SVG files: {backfilled}", flush=True)
     print(
         f"Start SVG layer generation: init_time={args.init_time}, "
-        f"fc_hours={len(fc_hours)}, levels={len(args.levels)}"
+        f"fc_hours={len(fc_hours)}, levels={len(args.levels)}, workers={args.workers}",
+        flush=True,
     )
 
-    for fc_hour in fc_hours:
-        if not args.surface_only:
-            for level in args.levels:
-                generate_upper_air_layers(args, fc_hour, level, bounds, manifest)
-        if not args.upper_only:
-            generate_surface_layers(args, fc_hour, bounds, manifest)
+    run_generation_jobs(args, fc_hours, bounds, manifest)
 
     manifest_path = write_manifest(output_root, args.init_time, manifest)
-    print(f"Wrote manifest: {manifest_path}")
+    print(f"Wrote manifest: {manifest_path}", flush=True)
 
 
 if __name__ == "__main__":
