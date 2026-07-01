@@ -285,7 +285,7 @@ input {
 
 .map-workspace {
   display: grid;
-  grid-template-rows: 48px minmax(0, 1fr);
+  grid-template-rows: 48px 78px minmax(0, 1fr);
   min-width: 0;
   background: #dfe6ee;
 }
@@ -315,6 +315,62 @@ input {
 .toolbar span {
   color: #5f6f82;
   font-size: 13px;
+}
+
+.forecast-slider-row {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr) minmax(130px, auto);
+  align-items: center;
+  gap: 16px;
+  padding: 14px 18px 18px;
+  border-bottom: 1px solid #c8d2dd;
+  background: #fbfcfe;
+}
+
+.forecast-slider-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.forecast-slider-actions > span {
+  color: #526173;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.forecast-slider-container {
+  min-width: 0;
+  padding: 0 4px;
+  cursor: pointer;
+}
+
+.forecast-slider-container:hover {
+  filter: drop-shadow(0 0 4px rgba(31, 122, 140, 0.28));
+}
+
+.forecast-slider-readout {
+  display: grid;
+  gap: 2px;
+  justify-items: end;
+  min-width: 0;
+}
+
+.forecast-slider-readout strong {
+  color: #172033;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.forecast-slider-readout span {
+  color: #667487;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.forecast-slider-row .vue-slider-mark-label {
+  margin-top: 8px;
 }
 
 .canvas-shell {
@@ -385,5 +441,22 @@ canvas:active {
 
   .map-workspace {
     min-height: 56vh;
+  }
+
+  .forecast-slider-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 12px 16px 16px;
+  }
+
+  .forecast-slider-actions,
+  .forecast-slider-readout {
+    justify-content: space-between;
+  }
+
+  .forecast-slider-readout {
+    display: flex;
+    align-items: baseline;
+    justify-items: initial;
   }
 }

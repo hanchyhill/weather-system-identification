@@ -156,6 +156,27 @@ const firstAvailableFcHour = computed(() => (
   DEFAULT_FC_HOURS.find((value) => manifestFcHourSet.value?.has(value)) || DEFAULT_FC_HOURS[0]
 ))
 
+const sliderFcHours = computed(() => {
+  if (!manifestFcHourSet.value) return DEFAULT_FC_HOURS
+
+  const availableHours = DEFAULT_FC_HOURS.filter((value) => manifestFcHourSet.value.has(value))
+  return availableHours.length ? availableHours : DEFAULT_FC_HOURS
+})
+
+const fcHourIndex = computed({
+  get() {
+    const index = sliderFcHours.value.indexOf(normalizeFcHour(fcHour.value))
+    return index >= 0 ? index : 0
+  },
+  set(index) {
+    const nextFcHour = sliderFcHours.value[Number(index)]
+    if (nextFcHour) fcHour.value = nextFcHour
+  }
+})
+
+const sliderIndexCount = computed(() => sliderFcHours.value.length)
+const forecastValidTimeLabel = computed(() => getSliderTooltip(fcHourIndex.value))
+
 const fcHourOptions = computed(() => DEFAULT_FC_HOURS.map((value) => {
   const disabled = Boolean(manifest.value && manifestFcHourSet.value && !manifestFcHourSet.value.has(value))
   return {
@@ -268,6 +289,97 @@ function passesMinimum(value, minimum) {
 
 function normalizeFcHour(value) {
   return String(value || '0').padStart(3, '0')
+}
+
+function parseInitTime(value) {
+  const text = String(value || '')
+  const match = text.match(/^(\d{4})(\d{2})(\d{2})(\d{2})$/)
+  if (!match) return null
+
+  const [, year, month, day, hour] = match
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour)))
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function forecastValidDate(index) {
+  const initDate = parseInitTime(initTime.value)
+  const fcValue = sliderFcHours.value[Number(index)]
+  if (!initDate || !fcValue) return null
+
+  return new Date(initDate.getTime() + Number(fcValue) * 60 * 60 * 1000)
+}
+
+function padTimePart(value) {
+  return String(value).padStart(2, '0')
+}
+
+function formatForecastValidTime(index, includeMonth = true) {
+  const date = forecastValidDate(index)
+  if (!date) {
+    const fcValue = sliderFcHours.value[Number(index)]
+    return fcValue ? `+${fcValue} h` : '--'
+  }
+
+  const month = padTimePart(date.getUTCMonth() + 1)
+  const day = padTimePart(date.getUTCDate())
+  const hour = padTimePart(date.getUTCHours())
+  return includeMonth ? `${month}月${day}日${hour}时` : `${day}日${hour}时`
+}
+
+function getSliderTooltip(index) {
+  return formatForecastValidTime(index)
+}
+
+function markSlider(index) {
+  const date = forecastValidDate(index)
+  if (!date || date.getUTCHours() !== 12) return false
+
+  return {
+    label: formatForecastValidTime(index, false),
+    style: {
+      width: '4px',
+      height: '4px',
+      display: 'block',
+      backgroundColor: '#172033'
+    },
+    labelStyle: {
+      color: '#526173',
+      fontSize: '11px'
+    }
+  }
+}
+
+const sliderOpts = {
+  width: 'auto',
+  lazy: true,
+  dragOnClick: true,
+  process: false,
+  tooltipStyle: { minWidth: '90px', backgroundColor: '#1f7a8c', borderColor: '#1f7a8c' },
+  tooltip: 'always'
+}
+
+function changeFcHour(type = 'index', value = 1) {
+  if (type === 'index') {
+    const nextIndex = fcHourIndex.value + Number.parseInt(value, 10)
+    if (nextIndex >= 0 && nextIndex < sliderFcHours.value.length) {
+      fcHourIndex.value = nextIndex
+    }
+    return
+  }
+
+  if (type === 'hour') {
+    const nextFcValue = Number(fcHour.value) + Number(value)
+    const nextIndex = sliderFcHours.value.indexOf(normalizeFcHour(nextFcValue))
+    if (nextIndex >= 0) fcHourIndex.value = nextIndex
+    return
+  }
+
+  throw new TypeError(`无法处理的改变时效类型: ${type}`)
+}
+
+function scrollForecastSlider(event) {
+  event.preventDefault()
+  changeFcHour('index', event.deltaY > 0 ? 1 : -1)
 }
 
 function layerLabel(value) {
@@ -1076,9 +1188,13 @@ function resizeCanvas() {
 const context = {
   activeSystemTab,
   canvasRef,
+  changeFcHour,
   fcHour,
+  fcHourIndex,
   fcHourOptions,
+  forecastValidTimeLabel,
   formatNumber,
+  getSliderTooltip,
   handleMouseLeave,
   handleMouseMove,
   handleLayerTypeChange,
@@ -1109,6 +1225,7 @@ const context = {
   resetView,
   saveLayerCombination,
   savedLayerCombinations,
+  scrollForecastSlider,
   selectedLayerLabels,
   selectedLayerTypes,
   SHEAR_COLORS,
@@ -1124,6 +1241,9 @@ const context = {
   showVortexTracks,
   showWarmOnlyCenters,
   showWarmOnlyTracks,
+  sliderIndexCount,
+  sliderOpts,
+  markSlider,
   systemTabs,
   troughLineWidth,
   troughMinLength,

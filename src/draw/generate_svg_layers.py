@@ -289,10 +289,14 @@ def open_data_array(
         except Exception:
             data = data.sel({time_name: np.datetime64(selected_time(init_time))}, method="nearest")
 
-    if level is not None:
-        level_name = first_present(data.coords, ("level", "lev", "isobaricInhPa", "pressure"))
-        if level_name is not None:
-            data = data.sel({level_name: level}, method="nearest")
+    level_name = first_present(data.coords, ("level", "lev", "isobaricInhPa", "pressure"))
+    if level is not None and level_name is not None:
+        data = data.sel({level_name: level}, method="nearest")
+    elif level is None and level_name is not None:
+        try:
+            data = data.sel({level_name: 0.0})
+        except Exception:
+            data = data.sel({level_name: 0.0}, method="nearest")
 
     lat_name = coord_name(data, "lat")
     lon_name = coord_name(data, "lon")
@@ -836,8 +840,30 @@ def generate_surface_layers(args, fc_hour: str, bounds: Bounds, manifest) -> Non
         "level": None,
         "bounds": bounds,
     }
-    u_candidates = [args.u10_var.format(fc_hour=fc_hour), f"u10{fc_hour}", "u10", "u"]
-    v_candidates = [args.v10_var.format(fc_hour=fc_hour), f"v10{fc_hour}", "v10", "v"]
+    u_path = default_path(
+        args.u10_path, args.init_time, args.source, "u10m.nc", args.base_url_template
+    )
+    v_path = default_path(
+        args.v10_path, args.init_time, args.source, "v10m.nc", args.base_url_template
+    )
+    u_candidates = [
+        args.u10_var.format(fc_hour=fc_hour),
+        f"u10m{fc_hour}",
+        "u10m",
+        f"u10{fc_hour}",
+        "u10",
+        "10u",
+        "u",
+    ]
+    v_candidates = [
+        args.v10_var.format(fc_hour=fc_hour),
+        f"v10m{fc_hour}",
+        "v10m",
+        f"v10{fc_hour}",
+        "v10",
+        "10v",
+        "v",
+    ]
     mslp_path = default_path(args.mslp_path, args.init_time, args.source, "mslp.nc", args.base_url_template)
     mslp_candidates = [args.mslp_var.format(fc_hour=fc_hour), f"mslp{fc_hour}", "mslp", "msl"]
 
@@ -857,12 +883,10 @@ def generate_surface_layers(args, fc_hour: str, bounds: Bounds, manifest) -> Non
                 mslp = open_data_array(mslp_path, mslp_candidates, **common)
                 draw_mslp_contour(mslp, bounds, output_path, args.dpi)
             else:
-                if not args.u10_path or not args.v10_path:
-                    raise ValueError("Surface wind layers require --u10-path and --v10-path")
                 if wind_fields is None:
                     wind_fields = (
-                        open_data_array(args.u10_path, u_candidates, **common),
-                        open_data_array(args.v10_path, v_candidates, **common),
+                        open_data_array(u_path, u_candidates, **common),
+                        open_data_array(v_path, v_candidates, **common),
                     )
                 u, v = wind_fields
                 if layer_type == "surface_quiver":
@@ -925,17 +949,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vort-path", help="Local path or URL for upper-air relative vorticity NetCDF.")
     parser.add_argument("--rhum-path", help="Local path or URL for upper-air relative humidity NetCDF.")
     parser.add_argument("--mslp-path", help="Local path or URL for mean sea level pressure NetCDF.")
-    parser.add_argument("--u10-path", help="Local path or URL for 10 m U wind NetCDF.")
-    parser.add_argument("--v10-path", help="Local path or URL for 10 m V wind NetCDF.")
+    parser.add_argument(
+        "--u10-path",
+        "--u10m-path",
+        dest="u10_path",
+        help="Local path or URL for 10 m U wind NetCDF.",
+    )
+    parser.add_argument(
+        "--v10-path",
+        "--v10m-path",
+        dest="v10_path",
+        help="Local path or URL for 10 m V wind NetCDF.",
+    )
     parser.add_argument("--uwnd-var", default="uwnd{fc_hour}")
     parser.add_argument("--vwnd-var", default="vwnd{fc_hour}")
     parser.add_argument("--hght-var", default="hght{fc_hour}")
     parser.add_argument("--temp-var", default="temp{fc_hour}")
     parser.add_argument("--vort-var", default="vort{fc_hour}")
     parser.add_argument("--rhum-var", default="rhum{fc_hour}")
-    parser.add_argument("--mslp-var", default="mslp{fc_hour}")
-    parser.add_argument("--u10-var", default="u10")
-    parser.add_argument("--v10-var", default="v10")
+    parser.add_argument("--mslp-var", default="mslp")
+    parser.add_argument("--u10-var", "--u10m-var", dest="u10_var", default="u10m")
+    parser.add_argument("--v10-var", "--v10m-var", dest="v10_var", default="v10m")
     parser.add_argument("--surface-only", action="store_true", help="Generate only surface layers.")
     parser.add_argument("--upper-only", action="store_true", help="Generate only upper-air layers.")
     parser.add_argument("--skip-existing", action="store_true", help="Reuse existing SVG files.")
