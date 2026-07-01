@@ -70,14 +70,13 @@ BOUND_WIND = [
     17.5, 18, 18.5, 19, 19.5, 20, 20.5, 21, 21.5, 22,
 ]
 COLORDICT_WIND_HIGH = [
-    "#a5fdfe", "#95deea", "#79c3d3", "#65abbe", "#5393a9",
     "#6fd069", "#ade780", "#fbfbaa", "#f6bc6d", "#f66d4d",
     "#d65144", "#7b342d", "#b449f7", "#cb73ef", "#e7a4fd",
     "#fcdcfe",
 ]
 BOUND_WIND_HIGH = [
-    0, 1.5, 3.3, 5.4, 7.9, 10.7, 13.8, 17.1, 20.7,
-    24.4, 28.4, 32.6, 36.9, 41.0, 50.9, 56.0, 61.2,
+    12.0, 13.8, 17.1, 20.7, 24.4, 28.4, 32.6, 36.9,
+    41.0, 50.9, 56.0, 61.2,
 ]
 TEMP_COLOR_DICT = {
     "red": (
@@ -348,10 +347,10 @@ def contour_levels_from_data(values: np.ndarray, interval: float) -> np.ndarray:
     return np.arange(start, stop, interval)
 
 
-def wind_speed_style(level: int | None) -> tuple[list[float], mcolors.Colormap, mcolors.BoundaryNorm]:
+def wind_speed_style(level: int | None) -> tuple[list[float], mcolors.Colormap, mcolors.BoundaryNorm, str]:
     if level is not None and level <= 500:
-        return BOUND_WIND_HIGH, CLRMAP_WIND_HIGH, NORMS_WIND_HIGH
-    return BOUND_WIND, CLRMAP_WIND, NORMS_WIND
+        return BOUND_WIND_HIGH, CLRMAP_WIND_HIGH, NORMS_WIND_HIGH, "max"
+    return BOUND_WIND, CLRMAP_WIND, NORMS_WIND, "both"
 
 
 def temperature_celsius(temp: xr.DataArray) -> xr.DataArray:
@@ -563,7 +562,7 @@ def draw_wind_speed_fill(
     speed = smooth_array(wind_speed(u, v), sigma)
     lon, lat = lon_lat_values(speed)
     finite_values(speed, "Wind speed")
-    levels, cmap, norm = wind_speed_style(level)
+    levels, cmap, norm, extend = wind_speed_style(level)
     ax.contourf(
         lon,
         lat,
@@ -571,7 +570,7 @@ def draw_wind_speed_fill(
         levels=levels,
         cmap=cmap,
         norm=norm,
-        extend="both",
+        extend=extend,
         transform=ccrs.PlateCarree(),
     )
     save_svg(fig, output_path)
@@ -723,6 +722,64 @@ def ensure_manifest_shape(init_time: str, bounds: Bounds) -> dict[str, object]:
     }
 
 
+def rebuild_manifest_indexes(manifest: dict[str, object]) -> None:
+    fc_hours = manifest.get("fc_hours")
+    levels = manifest.get("levels")
+    products = manifest.get("products")
+
+    if not isinstance(fc_hours, list):
+        fc_hours = []
+        manifest["fc_hours"] = fc_hours
+    if not isinstance(levels, list):
+        levels = []
+        manifest["levels"] = levels
+    if not isinstance(products, dict):
+        products = {}
+        manifest["products"] = products
+
+    fc_hour_set = {str(fc_hour) for fc_hour in fc_hours}
+    level_set = {str(level) for level in levels}
+    for fc_hour, levels_by_hour in products.items():
+        fc_hour_set.add(str(fc_hour))
+        if not isinstance(levels_by_hour, dict):
+            continue
+        for level in levels_by_hour:
+            level_set.add(str(level))
+
+    manifest["fc_hours"] = list(fc_hour_set)
+    manifest["levels"] = list(level_set)
+
+
+def load_manifest(output_root: Path, init_time: str, bounds: Bounds) -> dict[str, object]:
+    manifest_path = output_root / init_time / "manifest.json"
+    manifest = ensure_manifest_shape(init_time, bounds)
+    if not manifest_path.exists():
+        return manifest
+
+    try:
+        existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Could not read existing manifest, starting fresh: {manifest_path}, error={exc}")
+        return manifest
+
+    if not isinstance(existing_manifest, dict):
+        print(f"Existing manifest is not a JSON object, starting fresh: {manifest_path}")
+        return manifest
+
+    manifest.update(existing_manifest)
+    manifest["init_time"] = init_time
+    manifest["bounds"] = bounds.as_dict()
+    manifest["projection"] = "PlateCarree"
+    if not isinstance(manifest.get("layer_types"), dict):
+        manifest["layer_types"] = {}
+    layer_types = manifest["layer_types"]
+    assert isinstance(layer_types, dict)
+    layer_types.setdefault("upper_air", list(HIGH_LAYER_TYPES))
+    layer_types.setdefault("surface", list(SURFACE_LAYER_TYPES))
+    rebuild_manifest_indexes(manifest)
+    return manifest
+
+
 def add_manifest_record(manifest: dict[str, object], record: dict[str, object]) -> None:
     fc_hour = str(record["fc_hour"])
     level = str(record["level"])
@@ -739,6 +796,57 @@ def add_manifest_record(manifest: dict[str, object], record: dict[str, object]) 
         fc_hours.append(fc_hour)
     if level not in levels:
         levels.append(level)
+
+
+def manifest_has_record(
+    manifest: dict[str, object], fc_hour: str, level: str, layer_type: str
+) -> bool:
+    products = manifest.get("products")
+    if not isinstance(products, dict):
+        return False
+    levels_by_hour = products.get(fc_hour)
+    if not isinstance(levels_by_hour, dict):
+        return False
+    layers_by_level = levels_by_hour.get(level)
+    if not isinstance(layers_by_level, dict):
+        return False
+    return layer_type in layers_by_level
+
+
+def backfill_manifest_from_existing_svgs(
+    output_root: Path, init_time: str, bounds: Bounds, manifest: dict[str, object]
+) -> int:
+    init_root = output_root / init_time
+    if not init_root.exists():
+        return 0
+
+    backfilled = 0
+    for svg_path in init_root.glob("*/*/*.svg"):
+        relative_parts = svg_path.relative_to(init_root).parts
+        if len(relative_parts) != 3:
+            continue
+
+        fc_hour, level, filename = relative_parts
+        layer_type = Path(filename).stem
+        if manifest_has_record(manifest, fc_hour, level, layer_type):
+            continue
+
+        add_manifest_record(
+            manifest,
+            product_record(
+                init_time,
+                fc_hour,
+                level,
+                layer_type,
+                svg_path,
+                output_root,
+                bounds,
+                "generated",
+            ),
+        )
+        backfilled += 1
+
+    return backfilled
 
 
 def log_layer_result(fc_hour: str, level: str | int, layer_type: str, status: str, output_path: Path, error: str | None = None) -> None:
@@ -916,6 +1024,8 @@ def generate_surface_layers(args, fc_hour: str, bounds: Bounds, manifest) -> Non
 
 
 def write_manifest(output_root: Path, init_time: str, manifest: dict[str, object]) -> Path:
+    rebuild_manifest_indexes(manifest)
+    manifest["generated_at"] = datetime.now(timezone.utc).isoformat()
     manifest["fc_hours"] = sorted(manifest["fc_hours"])
     manifest["levels"] = sorted(manifest["levels"], key=lambda item: (item == "surface", str(item)))
     manifest_path = output_root / init_time / "manifest.json"
@@ -972,7 +1082,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--v10-var", "--v10m-var", dest="v10_var", default="v10m")
     parser.add_argument("--surface-only", action="store_true", help="Generate only surface layers.")
     parser.add_argument("--upper-only", action="store_true", help="Generate only upper-air layers.")
-    parser.add_argument("--skip-existing", action="store_true", help="Reuse existing SVG files.")
+    parser.set_defaults(skip_existing=True)
+    parser.add_argument(
+        "--skip-existing",
+        dest="skip_existing",
+        action="store_true",
+        help="Reuse existing SVG files. This is the default.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        dest="skip_existing",
+        action="store_false",
+        help="Regenerate SVG files even when they already exist.",
+    )
     parser.add_argument("--dpi", type=int, default=150)
     parser.add_argument("--skip", type=int, default=8, help="Vector/barb grid skip.")
     parser.add_argument("--sigma", type=float, default=2.0, help="Gaussian smoothing sigma.")
@@ -986,7 +1108,10 @@ def main() -> None:
     bounds = Bounds(*args.bounds)
     output_root = Path(args.output)
     fc_hours = [format_fc_hour(fc_hour) for fc_hour in args.fc_hours]
-    manifest = ensure_manifest_shape(args.init_time, bounds)
+    manifest = load_manifest(output_root, args.init_time, bounds)
+    backfilled = backfill_manifest_from_existing_svgs(output_root, args.init_time, bounds, manifest)
+    if backfilled:
+        print(f"Backfilled manifest records from existing SVG files: {backfilled}")
     print(
         f"Start SVG layer generation: init_time={args.init_time}, "
         f"fc_hours={len(fc_hours)}, levels={len(args.levels)}"
