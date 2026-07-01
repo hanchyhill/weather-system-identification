@@ -16,6 +16,8 @@ const DEFAULT_FC_HOURS = [
   '198', '204', '210', '216', '222', '228', '234', '240'
 ]
 const DEFAULT_LEVELS = ['200', '500', '700', '850', '925', '950', '1000']
+const DEFAULT_MAP_CENTER = [105, 20]
+const DEFAULT_MAP_SCALE = 3
 const SHEAR_COLORS = {
   shear_u_left: '#2563eb',
   shear_u_right: '#16a34a',
@@ -513,8 +515,8 @@ function buildProjection() {
   } else if (projectionName.value === 'lambert') {
     projection = d3.geoConicConformal()
       .parallels([25, 47])
-      .rotate([-110, 0, 0])
-      .center([0, 30])
+      .rotate([-DEFAULT_MAP_CENTER[0], 0, 0])
+      .center([0, DEFAULT_MAP_CENTER[1]])
   } else {
     projection = d3.geoEquirectangular()
   }
@@ -523,6 +525,30 @@ function buildProjection() {
     [[margin.left, margin.top], [canvasSize.width - margin.right, canvasSize.height - margin.bottom]],
     extent
   )
+}
+
+function defaultMapTransform() {
+  const projection = buildProjection()
+  const projectedCenter = projection(DEFAULT_MAP_CENTER)
+  if (!projectedCenter) return d3.zoomIdentity
+
+  return d3.zoomIdentity
+    .translate(
+      (canvasSize.width / 2) - (projectedCenter[0] * DEFAULT_MAP_SCALE),
+      (canvasSize.height / 2) - (projectedCenter[1] * DEFAULT_MAP_SCALE)
+    )
+    .scale(DEFAULT_MAP_SCALE)
+}
+
+function applyDefaultView(animate = false) {
+  const nextTransform = defaultMapTransform()
+  zoomTransform.value = nextTransform
+
+  if (canvasRef.value && zoomBehavior) {
+    const selection = d3.select(canvasRef.value)
+    const target = animate ? selection.transition().duration(160) : selection
+    target.call(zoomBehavior.transform, nextTransform)
+  }
 }
 
 function transformedPoint(projection, lonLat) {
@@ -1149,10 +1175,7 @@ async function loadVortexTracks() {
 }
 
 function resetView() {
-  zoomTransform.value = d3.zoomIdentity
-  if (canvasRef.value && zoomBehavior) {
-    d3.select(canvasRef.value).transition().duration(160).call(zoomBehavior.transform, d3.zoomIdentity)
-  }
+  applyDefaultView(true)
   requestDraw()
 }
 
@@ -1319,6 +1342,7 @@ onMounted(async () => {
 
   d3.select(canvasRef.value).call(zoomBehavior)
   resizeCanvas()
+  applyDefaultView()
   await Promise.all([loadWorld(), loadManifest()])
 })
 
