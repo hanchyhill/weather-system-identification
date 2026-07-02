@@ -3,45 +3,61 @@
 ## 概要
 
 - 将后端 SVG 产物从“每个天气图层一张 SVG”改造为四叉树瓦片。
-- 固定使用 3 级瓦片方案，范围为 `60E-150E, 0N-60N`。
+- 当前业务生成范围固定为 `60E-150E, 0N-60N`，但瓦片编号采用全局矩阵绝对编号，避免后续扩展到全球时重排 URL。
 - 前端优先读取 manifest 中的瓦片记录；若遇到旧版单张 SVG 记录，仍保持兼容显示。
 - 实施顺序先改造 `src/draw/generate_svg_layers.py`，再改造 `vis_web` 的按缩放等级加载逻辑。
 
 ## 瓦片方案
 
 - 投影：`PlateCarree`。
-- 范围：经度 `60-150E`，纬度 `0-60N`。
-- 原点：西北角；`x` 从西向东递增，`y` 从北向南递增。
-- 层级：
-  - `z=0`：`1 x 1`，单瓦片 `90 x 60` 度。
-  - `z=1`：`2 x 2`，单瓦片 `45 x 30` 度。
-  - `z=2`：`4 x 4`，单瓦片 `22.5 x 15` 度。
-- 瓦片范围计算公式：
+- 当前生成范围：经度 `60-150E`，纬度 `0-60N`。
+- 瓦片编号采用全局矩阵绝对编号，而不是当前生成范围内的局部编号。
+- 全局矩阵使用西北角原点；`x` 从西向东递增，`y` 从北向南递增。
+- 全局矩阵范围采用可扩展的 PlateCarree 包络：
+  - 经度：`-120E` 到 `240E`。
+  - 纬度：`-120N` 到 `120N`。
+  - 该矩阵覆盖完整全球经度，纬度上下各保留 30 度 padding，方便当前业务区完整对齐到瓦片边界。
+  - 后续扩展全球时，真实地球范围外的 padding 瓦片不生成即可。
+- 当前业务区的瓦片尺寸仍为：
+  - `z=0`：单瓦片 `90 x 60` 度，当前业务区生成 `1 x 1` 个瓦片。
+  - `z=1`：单瓦片 `45 x 30` 度，当前业务区生成 `2 x 2` 个瓦片。
+  - `z=2`：单瓦片 `22.5 x 15` 度，当前业务区生成 `4 x 4` 个瓦片。
+- 全局矩阵在各层级的总行列数为：
+  - `z=0`：`4 x 4`。
+  - `z=1`：`8 x 8`。
+  - `z=2`：`16 x 16`。
+- 瓦片尺寸计算公式：
   - `n = 2 ** z`
   - `tile_lon_size = 90 / n`
   - `tile_lat_size = 60 / n`
-  - `lon_min = 60 + x * tile_lon_size`
-  - `lon_max = 60 + (x + 1) * tile_lon_size`
-  - `lat_max = 60 - y * tile_lat_size`
-  - `lat_min = 60 - (y + 1) * tile_lat_size`
+- 由全局 `x/y` 反算瓦片范围：
+  - `lon_min = -120 + x * tile_lon_size`
+  - `lon_max = -120 + (x + 1) * tile_lon_size`
+  - `lat_max = 120 - y * tile_lat_size`
+  - `lat_min = 120 - (y + 1) * tile_lat_size`
+- 当前业务区生成的全局编号为：
+  - `z=0`：`x=2, y=1`。
+  - `z=1`：`x=4-5, y=2-3`。
+  - `z=2`：`x=8-11, y=4-7`。
+- 文件路径中的 `{x}/{y}` 必须使用全局编号；如需调试局部行列，可在 manifest 中额外记录 `local_x/local_y`，但不要用于路径。
 
 ## 后端改造
 
 - 新增 `src/draw/svg_layer_config.py`。
-  - 定义 `TILE_SCHEME`，包含瓦片范围、原点、层级和每层瓦片数量。
+  - 定义 `TILE_SCHEME`，包含当前生成范围、全局矩阵范围、原点、层级和每层全局矩阵数量。
   - 将主要绘图参数从 `generate_svg_layers.py` 中抽离出来。
   - 提供 `style_for(layer_type, level, z)`，用于按图层类型、气压层和瓦片层级获取绘图参数。
   - 配置项覆盖风矢量/风羽密度、平滑参数、流线密度、等值线间隔、等值线范围、颜色、线宽、填色分级、色标和 `extend` 模式。
 
 - 改造 `src/draw/generate_svg_layers.py`。
   - 将 `DEFAULT_BOUNDS` 改为 `(60.0, 150.0, 0.0, 60.0)`。
-  - 新增 `Tile` 数据结构，字段包括 `z`、`x`、`y` 和 `bounds`。
-  - 新增基于四叉树方案的瓦片遍历函数。
+  - 新增 `Tile` 数据结构，字段包括 `z`、`x`、`y`、`bounds`，其中 `x/y` 是全局矩阵编号。
+  - 新增基于全局矩阵的瓦片遍历函数：先计算每个层级下与当前生成范围相交的全局瓦片，再逐块渲染。
   - 新增 `--tile-levels` 参数，默认值为 `0 1 2`。
-  - 保留 `--bounds`，用于覆盖完整生成范围。
+  - 保留 `--bounds`，用于覆盖完整生成范围；覆盖后仍按全局矩阵编号选择相交瓦片。
   - 保留 `--skip` 和 `--sigma` 作为命令行兜底参数，但优先使用 `svg_layer_config.py` 中的配置。
   - 输出路径改为：
-    `data/products/{init_time}/{fc_hour}/{level}/{layer_type}/{z}/{x}/{y}.svg`
+    `data/products/{init_time}/{fc_hour}/{level}/{layer_type}/{z}/{global_x}/{global_y}.svg`
 
 - 更新图层生成流程。
   - 每个预报时效、气压层和图层类型只打开一次所需 NetCDF 字段。
@@ -68,9 +84,21 @@
     "lat_min": 0,
     "lat_max": 60
   },
+  "matrix_bounds": {
+    "lon_min": -120,
+    "lon_max": 240,
+    "lat_min": -120,
+    "lat_max": 120
+  },
   "origin": "northwest",
+  "indexing": "global_matrix",
   "levels": [0, 1, 2],
   "tile_count": {
+    "0": [4, 4],
+    "1": [8, 8],
+    "2": [16, 16]
+  },
+  "generated_tile_count": {
     "0": [1, 1],
     "1": [2, 2],
     "2": [4, 4]
@@ -98,9 +126,9 @@
     "0": [
       {
         "z": 0,
-        "x": 0,
-        "y": 0,
-        "path": "024/500/wind_speed_fill/0/0/0.svg",
+        "x": 2,
+        "y": 1,
+        "path": "024/500/wind_speed_fill/0/2/1.svg",
         "bounds": {
           "lon_min": 60,
           "lon_max": 150,
@@ -118,7 +146,7 @@
 - 前端继续支持旧版仅包含 `path` 的产品记录。
 - manifest 回填逻辑需要同时识别两种路径：
   - 旧路径：`{fc_hour}/{level}/{layer_type}.svg`
-  - 新路径：`{fc_hour}/{level}/{layer_type}/{z}/{x}/{y}.svg`
+  - 新路径：`{fc_hour}/{level}/{layer_type}/{z}/{global_x}/{global_y}.svg`
 
 ## 前端改造
 
@@ -132,6 +160,7 @@
     - `tilesForRecord(record, z)`
     - `tileUrl(tile)`
     - `isTileVisible(tile, projection, canvasSize, zoomTransform)`
+  - 前端不能假设瓦片 `x/y` 从 `0` 开始；必须以 manifest 中的全局 `x/y` 和 `bounds` 为准。
   - 更新 `loadActiveLayer()`，使其支持两种加载方式：
     - 对新瓦片记录，加载当前缩放等级下可见的瓦片。
     - 对旧单图记录，继续加载原单张 SVG。
@@ -161,17 +190,20 @@
 - 后端冒烟测试：
   - 使用单个预报时效、单个气压层执行 `--tile-levels 0 1 2 --overwrite`。
   - 确认每个生成图层有 `21` 个 SVG 文件。
-  - 确认 `z=0` 有 `1` 个瓦片，`z=1` 有 `4` 个瓦片，`z=2` 有 `16` 个瓦片。
+  - 确认当前业务区内 `z=0` 有 `1` 个瓦片，`z=1` 有 `4` 个瓦片，`z=2` 有 `16` 个瓦片。
 - Manifest 校验：
-  - 确认存在 `tile_scheme`，且范围符合约定。
+  - 确认存在 `tile_scheme`，且 `bounds` 与 `matrix_bounds` 符合约定。
+  - 确认 `tile_scheme.indexing` 为 `global_matrix`。
   - 确认每个瓦片产品包含 `tiles.0`、`tiles.1`、`tiles.2`。
-  - 确认每个 tile 的 `bounds` 与四叉树公式一致。
+  - 确认每个 tile 的 `bounds` 与全局矩阵公式一致。
+  - 确认当前业务区的瓦片编号为：`z=0` 的 `x=2,y=1`，`z=1` 的 `x=4-5,y=2-3`，`z=2` 的 `x=8-11,y=4-7`。
 - 前端构建：
   - `cd vis_web && pnpm build`
 - 前端手工验证：
   - 启动 Vite 开发服务。
   - 确认旧版单张 SVG manifest 仍能显示。
   - 确认瓦片 manifest 在缩放跨阈值时分别加载 `z=0`、`z=1`、`z=2`。
+  - 确认前端使用 manifest 中的全局 `x/y` 和 `bounds`，而不是假设 `x/y` 从 `0` 开始。
   - 确认同一缩放等级内平移不会不必要地重新加载所有产品。
   - 确认多选 SVG 图层仍保持填色层和叠加层的绘制顺序。
 
@@ -180,4 +212,5 @@
 - 新后端产物默认只生成瓦片 SVG；如需同时生成旧版单张 SVG，可后续增加兼容模式。
 - `data/products` 中已有的旧版单张 SVG 数据可以继续保留，并由前端兼容读取。
 - 新的固定生产范围为 `60E-150E, 0N-60N`。
+- 瓦片路径从一开始采用全局矩阵编号，后续扩展全球时不重命名已有瓦片。
 - 初版实现保留现有 canvas 绘制架构，不引入 worker 重投影。
