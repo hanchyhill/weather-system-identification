@@ -16,7 +16,7 @@ const DEFAULT_FC_HOURS = [
   '198', '204', '210', '216', '222', '228', '234', '240'
 ]
 const DEFAULT_LEVELS = ['200', '500', '700', '850', '925', '950', '1000']
-const DEFAULT_MAP_CENTER = [105, 20]
+const DEFAULT_MAP_CENTER = [110, 29]
 const DEFAULT_MAP_SCALE = 3
 const SHEAR_COLORS = {
   shear_u_left: '#2563eb',
