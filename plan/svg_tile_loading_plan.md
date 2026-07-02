@@ -124,8 +124,8 @@
 
 - 更新 `vis_web/src/composables/useWeatherView.js`。
   - 新增 `getTileZoom(k)`，固定阈值为：
-    - `k <= 4`：使用 `z=0`
-    - `4 < k <= 8`：使用 `z=1`
+    - `k <= 5`：使用 `z=0`
+    - `5 < k <= 8`：使用 `z=1`
     - `k > 8`：使用 `z=2`
   - 新增瓦片记录辅助函数：
     - `hasTiles(record)`
