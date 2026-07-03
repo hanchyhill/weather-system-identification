@@ -16,7 +16,8 @@ const DEFAULT_FC_HOURS = [
   '198', '204', '210', '216', '222', '228', '234', '240'
 ]
 const DEFAULT_LEVELS = ['200', '500', '700', '850', '925', '950', '1000']
-const DEFAULT_MAP_CENTER = [110, 29]
+const DEFAULT_MAP_BOUNDS = { lon_min: 60, lon_max: 150, lat_min: 0, lat_max: 60 }
+const DEFAULT_MAP_CENTER = [105, 30]
 const DEFAULT_MAP_SCALE = 3
 const SHEAR_COLORS = {
   shear_u_left: '#2563eb',
@@ -104,6 +105,9 @@ const cache = new SvgImageCache()
 let resizeObserver = null
 let zoomBehavior = null
 let drawQueued = false
+let activeLayerLoadId = 0
+let visibleTileLoadId = 0
+let loadedTileZoom = null
 
 const projectionOptions = [
   { label: '等经纬度', value: 'equirectangular' },
@@ -455,9 +459,90 @@ function layerUrl(record) {
   return `/data/products/${initTime.value}/${record.path}`
 }
 
+function hasTiles(record) {
+  return Boolean(record?.tiles && typeof record.tiles === 'object')
+}
+
+function tilesForRecord(record, z) {
+  if (!hasTiles(record)) return []
+  const tiles = record.tiles[String(z)]
+  return Array.isArray(tiles) ? tiles : []
+}
+
+function tileUrl(tile) {
+  if (!tile?.path) return null
+  return `/data/products/${initTime.value}/${tile.path}`
+}
+
+function layerHasLoadable(record) {
+  return hasTiles(record) || Boolean(layerUrl(record))
+}
+
+function getTileZoom(k) {
+  if (k <= 5) return 0
+  if (k <= 8) return 1
+  return 2
+}
+
+function manifestBounds() {
+  const bounds = manifest.value?.tile_scheme?.bounds || manifest.value?.bounds || DEFAULT_MAP_BOUNDS
+  return {
+    lon_min: Number(bounds.lon_min ?? DEFAULT_MAP_BOUNDS.lon_min),
+    lon_max: Number(bounds.lon_max ?? DEFAULT_MAP_BOUNDS.lon_max),
+    lat_min: Number(bounds.lat_min ?? DEFAULT_MAP_BOUNDS.lat_min),
+    lat_max: Number(bounds.lat_max ?? DEFAULT_MAP_BOUNDS.lat_max)
+  }
+}
+
+function boundsPolygon(bounds) {
+  return {
+    type: 'Polygon',
+    coordinates: [[
+      [bounds.lon_min, bounds.lat_min],
+      [bounds.lon_max, bounds.lat_min],
+      [bounds.lon_max, bounds.lat_max],
+      [bounds.lon_min, bounds.lat_max],
+      [bounds.lon_min, bounds.lat_min]
+    ]]
+  }
+}
+
+function isTileVisible(tile, projection, size, transform) {
+  const bounds = tile?.bounds
+  if (!bounds) return false
+
+  const points = [
+    [bounds.lon_min, bounds.lat_min],
+    [bounds.lon_max, bounds.lat_min],
+    [bounds.lon_max, bounds.lat_max],
+    [bounds.lon_min, bounds.lat_max],
+    [(bounds.lon_min + bounds.lon_max) / 2, (bounds.lat_min + bounds.lat_max) / 2]
+  ]
+  const projected = points
+    .map((point) => projection(point))
+    .filter(Boolean)
+    .map((point) => transform.apply(point))
+
+  if (!projected.length) return false
+  if (projected.some(([x, y]) => x >= 0 && x <= size.width && y >= 0 && y <= size.height)) {
+    return true
+  }
+
+  const xs = projected.map(([x]) => x)
+  const ys = projected.map(([, y]) => y)
+  return Math.max(...xs) >= 0
+    && Math.min(...xs) <= size.width
+    && Math.max(...ys) >= 0
+    && Math.min(...ys) <= size.height
+}
+
 function recordForLayerType(targetLayerType) {
   const products = manifest.value?.products
   return products?.[fcHour.value]?.[level.value]?.[targetLayerType] || null
+}
+
+function selectedLayerHasTiles() {
+  return selectedLayerTypes.value.some((type) => hasTiles(recordForLayerType(type)))
 }
 
 function saveLayerCombination() {
@@ -498,16 +583,7 @@ function handleLayerTypeChange(value) {
 
 function buildProjection() {
   const margin = { left: 46, top: 18, right: 22, bottom: 34 }
-  const extent = {
-    type: 'Polygon',
-    coordinates: [[
-      [60, 0],
-      [180, 0],
-      [180, 60],
-      [60, 60],
-      [60, 0]
-    ]]
-  }
+  const extent = boundsPolygon(manifestBounds())
 
   let projection
   if (projectionName.value === 'mercator') {
@@ -631,7 +707,10 @@ function drawBaseMap(context, path) {
 function drawGraticule(context, projection) {
   const interval = zoomTransform.value.k >= 4 ? 5 : zoomTransform.value.k >= 2 ? 10 : 15
   const path = d3.geoPath(projection, context)
-  const graticule = d3.geoGraticule().extent([[60, 0], [180, 60]]).step([interval, interval])
+  const bounds = manifestBounds()
+  const graticule = d3.geoGraticule()
+    .extent([[bounds.lon_min, bounds.lat_min], [bounds.lon_max, bounds.lat_max]])
+    .step([interval, interval])
 
   context.beginPath()
   path(graticule())
@@ -658,9 +737,20 @@ function drawWeatherLayers(context, projection, fillLayers) {
 }
 
 function drawSvgLayer(context, projection, layer) {
-  if (!layer?.image || !layer?.record) return
+  if (!layer?.record) return
 
-  const bounds = layer.record.bounds
+  if (Array.isArray(layer.tiles)) {
+    for (const tile of layer.tiles) {
+      drawSvgImage(context, projection, tile.image, tile.bounds, layer)
+    }
+    return
+  }
+
+  drawSvgImage(context, projection, layer.image, layer.record.bounds, layer)
+}
+
+function drawSvgImage(context, projection, image, bounds, layer) {
+  if (!image || !bounds) return
   const topLeft = projection([bounds.lon_min, bounds.lat_max])
   const bottomRight = projection([bounds.lon_max, bounds.lat_min])
   if (!topLeft || !bottomRight) return
@@ -1016,13 +1106,18 @@ async function loadManifest() {
 }
 
 async function loadActiveLayer() {
+  const loadId = ++activeLayerLoadId
+  visibleTileLoadId += 1
   activeSvgLayers.value = []
   setSelectedLayerTypes(selectedLayerTypes.value)
+  const projection = buildProjection()
+  const tileZoom = getTileZoom(zoomTransform.value.k)
+  loadedTileZoom = tileZoom
   const candidates = selectedLayerTypes.value.map((type) => ({
     type,
     record: recordForLayerType(type)
   }))
-  const loadable = candidates.filter((item) => layerUrl(item.record))
+  const loadable = candidates.filter((item) => layerHasLoadable(item.record))
 
   if (!loadable.length) {
     loadingState.svg = '无匹配图层'
@@ -1032,7 +1127,12 @@ async function loadActiveLayer() {
 
   try {
     loadingState.svg = '加载中'
-    const loadedLayers = await Promise.all(loadable.map((item, order) => loadSvgLayer(item, order)))
+    const loadedLayers = await Promise.all(loadable.map((item, order) => (
+      hasTiles(item.record)
+        ? loadSvgTileLayer(item, order, tileZoom, projection)
+        : loadSvgLayer(item, order)
+    )))
+    if (loadId !== activeLayerLoadId) return
     activeSvgLayers.value = loadedLayers.filter(Boolean)
     const missingCount = candidates.length - activeSvgLayers.value.length
     loadingState.svg = missingCount
@@ -1043,19 +1143,86 @@ async function loadActiveLayer() {
   }
 }
 
+async function loadSvgTileLayer({ type, record }, order, z, projection) {
+  const visibleTiles = tilesForRecord(record, z)
+    .filter((tile) => isUsableLayerStatus(tile.status ?? record.status))
+    .filter((tile) => tileUrl(tile))
+    .filter((tile) => isTileVisible(tile, projection, canvasSize, zoomTransform.value))
+
+  if (!visibleTiles.length) return null
+
+  const loadedTiles = (await Promise.all(visibleTiles.map(loadSvgTile))).filter(Boolean)
+  if (!loadedTiles.length) return null
+
+  return {
+    type,
+    record,
+    z,
+    tiles: loadedTiles,
+    isFill: isFillLayerRecord(type, record),
+    order
+  }
+}
+
+async function loadVisibleTileDelta() {
+  const loadId = ++visibleTileLoadId
+  const projection = buildProjection()
+  const additions = await Promise.all(activeSvgLayers.value.map(async (layer) => {
+    if (!Array.isArray(layer.tiles) || !hasTiles(layer.record)) return null
+
+    const loadedPaths = new Set(layer.tiles.map((tile) => tile.path))
+    const missingVisibleTiles = tilesForRecord(layer.record, layer.z)
+      .filter((tile) => isUsableLayerStatus(tile.status ?? layer.record.status))
+      .filter((tile) => tileUrl(tile) && !loadedPaths.has(tile.path))
+      .filter((tile) => isTileVisible(tile, projection, canvasSize, zoomTransform.value))
+
+    if (!missingVisibleTiles.length) return null
+    const loadedTiles = (await Promise.all(missingVisibleTiles.map(loadSvgTile))).filter(Boolean)
+    return loadedTiles.length ? { layer, loadedTiles } : null
+  }))
+
+  if (loadId !== visibleTileLoadId) return
+
+  let changed = false
+  for (const item of additions.filter(Boolean)) {
+    item.layer.tiles = [...item.layer.tiles, ...item.loadedTiles]
+    changed = true
+  }
+  if (changed) requestDraw()
+}
+
+async function loadSvgTile(tile) {
+  const url = tileUrl(tile)
+  const image = await loadSvgImage(url)
+  if (!image) return null
+  return {
+    image,
+    bounds: tile.bounds,
+    path: tile.path,
+    z: tile.z,
+    x: tile.x,
+    y: tile.y
+  }
+}
+
 async function loadSvgLayer({ type, record }, order) {
   const url = layerUrl(record)
+  const image = await loadSvgImage(url)
+  if (!image) return null
+  return {
+    type,
+    record,
+    image,
+    isFill: isFillLayerRecord(type, record),
+    order
+  }
+}
+
+async function loadSvgImage(url) {
+  if (!url) return null
   try {
     const cached = await cache.get(url)
-    if (cached) {
-      return {
-        type,
-        record,
-        image: cached,
-        isFill: isFillLayerRecord(type, record),
-        order
-      }
-    }
+    if (cached) return cached
 
     const image = new Image()
     image.crossOrigin = 'anonymous'
@@ -1065,13 +1232,7 @@ async function loadSvgLayer({ type, record }, order) {
       image.src = url
     })
     await cache.set(url, image)
-    return {
-      type,
-      record,
-      image,
-      isFill: isFillLayerRecord(type, record),
-      order
-    }
+    return image
   } catch {
     return null
   }
@@ -1295,6 +1456,10 @@ watch(selectedLayerTypes, async () => {
   await loadActiveLayer()
 }, { deep: true })
 
+watch(projectionName, async () => {
+  await loadActiveLayer()
+})
+
 watch([
   showSvgLayer,
   showTrough,
@@ -1305,7 +1470,6 @@ watch([
   showWarmOnlyTracks,
   showWarmOnlyCenters,
   showTooltip,
-  projectionName,
   troughMinLength,
   troughMinWindSpeed,
   troughLineWidth,
@@ -1337,6 +1501,12 @@ onMounted(async () => {
     .scaleExtent([0.6, 10])
     .on('zoom', (event) => {
       zoomTransform.value = event.transform
+      const nextTileZoom = getTileZoom(event.transform.k)
+      if (selectedLayerHasTiles() && nextTileZoom !== loadedTileZoom) {
+        loadActiveLayer()
+      } else if (selectedLayerHasTiles()) {
+        loadVisibleTileDelta()
+      }
       requestDraw()
     })
 
