@@ -3,8 +3,8 @@
 The output is organized for the Vue viewer:
 
     data/products/{init_time}/manifest.json
-    data/products/{init_time}/{fc_hour}/{level}/{layer_type}.svg
-    data/products/{init_time}/{fc_hour}/surface/{layer_type}.svg
+    data/products/{init_time}/{fc_hour}/{level}/{layer_type}/{z}/{x}/{y}.svg
+    data/products/{init_time}/{fc_hour}/surface/{layer_type}/{z}/{x}/{y}.svg
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -35,6 +36,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from weather_common import DEFAULT_SOURCE, TIME_STR_LIST_ECMWFTHIN, calLatestBaseTime
+from draw.svg_layer_config import TILE_SCHEME, style_for
 
 
 HIGH_LAYER_TYPES = (
@@ -55,7 +57,12 @@ SURFACE_LAYER_TYPES = (
     "mslp_contour",
 )
 DEFAULT_LEVELS = (200, 500, 700, 850, 925, 950, 1000)
-DEFAULT_BOUNDS = (60.0, 180.0, 0.0, 60.0)
+DEFAULT_BOUNDS = (
+    TILE_SCHEME["bounds"]["lon_min"],
+    TILE_SCHEME["bounds"]["lon_max"],
+    TILE_SCHEME["bounds"]["lat_min"],
+    TILE_SCHEME["bounds"]["lat_max"],
+)
 DEFAULT_BASE_URL_TEMPLATE = "http://10.148.8.71:7080/thredds/dodsC/{source}/"
 
 COLORDICT_WIND = [
@@ -217,6 +224,116 @@ class Bounds:
             "lat_max": self.lat_max,
         }
 
+    def intersects(self, other: "Bounds") -> bool:
+        return (
+            self.lon_min < other.lon_max
+            and self.lon_max > other.lon_min
+            and self.lat_min < other.lat_max
+            and self.lat_max > other.lat_min
+        )
+
+
+@dataclass(frozen=True)
+class Tile:
+    z: int
+    x: int
+    y: int
+    bounds: Bounds
+
+    def as_dict(self, path: Path, init_root: Path, status: str = "generated", error: str | None = None) -> dict[str, object]:
+        try:
+            rel_path = path.relative_to(init_root).as_posix()
+        except ValueError:
+            rel_path = path.as_posix()
+
+        record: dict[str, object] = {
+            "z": self.z,
+            "x": self.x,
+            "y": self.y,
+            "path": rel_path,
+            "bounds": self.bounds.as_dict(),
+            "status": status,
+        }
+        if error:
+            record["error"] = error
+        return record
+
+
+def tile_scheme_manifest(bounds: Bounds, levels: Iterable[int]) -> dict[str, object]:
+    scheme = json.loads(json.dumps(TILE_SCHEME))
+    scheme["bounds"] = bounds.as_dict()
+    selected_levels = [int(level) for level in levels]
+    scheme["levels"] = selected_levels
+    scheme["tile_count"] = {
+        str(z): matrix_tile_count(z)
+        for z in selected_levels
+    }
+    scheme["generated_tile_count"] = {
+        str(z): generated_tile_count(bounds, z)
+        for z in selected_levels
+    }
+    return scheme
+
+
+def matrix_bounds() -> Bounds:
+    values = TILE_SCHEME["matrix_bounds"]
+    return Bounds(values["lon_min"], values["lon_max"], values["lat_min"], values["lat_max"])
+
+
+def tile_size(z: int) -> tuple[float, float]:
+    n = 2 ** int(z)
+    base_size = TILE_SCHEME["base_tile_size"]
+    return base_size["lon"] / n, base_size["lat"] / n
+
+
+def matrix_tile_count(z: int) -> list[int]:
+    lon_size, lat_size = tile_size(z)
+    bounds = matrix_bounds()
+    return [
+        int(round((bounds.lon_max - bounds.lon_min) / lon_size)),
+        int(round((bounds.lat_max - bounds.lat_min) / lat_size)),
+    ]
+
+
+def tile_bounds(z: int, x: int, y: int) -> Bounds:
+    lon_size, lat_size = tile_size(z)
+    bounds = matrix_bounds()
+    return Bounds(
+        lon_min=bounds.lon_min + x * lon_size,
+        lon_max=bounds.lon_min + (x + 1) * lon_size,
+        lat_min=bounds.lat_max - (y + 1) * lat_size,
+        lat_max=bounds.lat_max - y * lat_size,
+    )
+
+
+def iter_tiles(bounds: Bounds, levels: Iterable[int]) -> list[Tile]:
+    epsilon = 1e-9
+    matrix = matrix_bounds()
+    tiles: list[Tile] = []
+    for z in levels:
+        lon_size, lat_size = tile_size(z)
+        x_count, y_count = matrix_tile_count(z)
+        x_min = max(0, int(np.floor((bounds.lon_min - matrix.lon_min) / lon_size)))
+        x_max = min(x_count - 1, int(np.ceil((bounds.lon_max - matrix.lon_min) / lon_size - epsilon)) - 1)
+        y_min = max(0, int(np.floor((matrix.lat_max - bounds.lat_max) / lat_size)))
+        y_max = min(y_count - 1, int(np.ceil((matrix.lat_max - bounds.lat_min) / lat_size - epsilon)) - 1)
+        for y in range(y_min, y_max + 1):
+            for x in range(x_min, x_max + 1):
+                tile = Tile(int(z), x, y, tile_bounds(int(z), x, y))
+                if tile.bounds.intersects(bounds):
+                    tiles.append(tile)
+    return tiles
+
+
+def generated_tile_count(bounds: Bounds, z: int) -> list[int]:
+    tiles = [tile for tile in iter_tiles(bounds, [z])]
+    if not tiles:
+        return [0, 0]
+    return [
+        len({tile.x for tile in tiles}),
+        len({tile.y for tile in tiles}),
+    ]
+
 
 def format_fc_hour(fc_hour: str | int) -> str:
     return str(fc_hour).strip().zfill(3)
@@ -272,14 +389,38 @@ def choose_variable(dataset: xr.Dataset, candidates: Iterable[str]) -> str:
     )
 
 
-def open_data_array(
-    path_or_url: str,
+class DatasetCache:
+    """Process-local xarray dataset cache for one generation worker."""
+
+    def __init__(self) -> None:
+        self._datasets: dict[str, xr.Dataset] = {}
+
+    def open(self, path_or_url: str) -> xr.Dataset:
+        dataset = self._datasets.get(path_or_url)
+        if dataset is None:
+            dataset = xr.open_dataset(path_or_url)
+            self._datasets[path_or_url] = dataset
+        return dataset
+
+    def close(self) -> None:
+        for dataset in self._datasets.values():
+            dataset.close()
+        self._datasets.clear()
+
+
+def open_dataset_cached(path_or_url: str, cache: DatasetCache | None = None) -> xr.Dataset:
+    if cache is None:
+        return xr.open_dataset(path_or_url)
+    return cache.open(path_or_url)
+
+
+def select_data_array(
+    dataset: xr.Dataset,
     variable_candidates: Iterable[str],
     init_time: str,
     level: int | None,
     bounds: Bounds,
 ) -> xr.DataArray:
-    dataset = xr.open_dataset(path_or_url)
     variable = choose_variable(dataset, variable_candidates)
     data = dataset[variable]
 
@@ -312,10 +453,32 @@ def open_data_array(
 
     if data.sizes.get(lat_name, 0) == 0 or data.sizes.get(lon_name, 0) == 0:
         raise ValueError(
-            f"No data remains after cropping to bounds {bounds.as_list()} from {path_or_url}"
+            f"No data remains after cropping to bounds {bounds.as_list()}"
         )
 
     return data.squeeze(drop=True)
+
+
+def open_data_array(
+    path_or_url: str,
+    variable_candidates: Iterable[str],
+    init_time: str,
+    level: int | None,
+    bounds: Bounds,
+    cache: DatasetCache | None = None,
+) -> xr.DataArray:
+    dataset = open_dataset_cached(path_or_url, cache)
+    try:
+        try:
+            data = select_data_array(dataset, variable_candidates, init_time, level, bounds)
+        except ValueError as exc:
+            raise ValueError(f"{exc} from {path_or_url}") from exc
+        if cache is None:
+            data = data.load()
+        return data
+    finally:
+        if cache is None:
+            dataset.close()
 
 
 def default_path(
@@ -349,10 +512,11 @@ def contour_levels_from_data(values: np.ndarray, interval: float) -> np.ndarray:
     return np.arange(start, stop, interval)
 
 
-def wind_speed_style(level: int | None) -> tuple[list[float], mcolors.Colormap, mcolors.BoundaryNorm, str]:
-    if level is not None and level <= 500:
-        return BOUND_WIND_HIGH, CLRMAP_WIND_HIGH, NORMS_WIND_HIGH, "max"
-    return BOUND_WIND, CLRMAP_WIND, NORMS_WIND, "both"
+def wind_speed_style(level: int | None, style: dict[str, object]) -> tuple[list[float], mcolors.Colormap, mcolors.BoundaryNorm, str]:
+    threshold = int(style.get("high_level_threshold", 500))
+    if level is not None and level <= threshold:
+        return BOUND_WIND_HIGH, CLRMAP_WIND_HIGH, NORMS_WIND_HIGH, str(style.get("high_extend", "max"))
+    return BOUND_WIND, CLRMAP_WIND, NORMS_WIND, str(style.get("extend", "both"))
 
 
 def temperature_celsius(temp: xr.DataArray) -> xr.DataArray:
@@ -428,6 +592,20 @@ def lon_lat_values(data: xr.DataArray) -> tuple[np.ndarray, np.ndarray]:
     )
 
 
+def crop_to_bounds(data: xr.DataArray, bounds: Bounds, padding: float = 0.0) -> xr.DataArray:
+    lat_name = coord_name(data, "lat")
+    lon_name = coord_name(data, "lon")
+    cropped = data.sel(
+        {
+            lon_name: slice(bounds.lon_min - padding, bounds.lon_max + padding),
+            lat_name: slice(bounds.lat_min - padding, bounds.lat_max + padding),
+        }
+    )
+    if cropped.sizes.get(lat_name, 0) < 2 or cropped.sizes.get(lon_name, 0) < 2:
+        return data
+    return cropped
+
+
 def setup_axis(bounds: Bounds, figsize: tuple[float, float], dpi: int):
     fig = plt.figure(figsize=figsize, dpi=dpi)
     ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
@@ -456,16 +634,16 @@ def save_svg(fig, output_path: Path) -> None:
 
 
 def draw_hght_contour(
-    hght: xr.DataArray,
+    hght_values: xr.DataArray,
     level: int,
     bounds: Bounds,
     output_path: Path,
     dpi: int,
+    style: dict[str, object],
 ) -> None:
-    fig, ax = setup_axis(bounds, (10, 8), dpi)
-    hght_smoothed = five_point_smooth(hght)
-    lon, lat = lon_lat_values(hght_smoothed)
-    values = np.asarray(hght_smoothed.values, dtype=float) / 10.0
+    fig, ax = setup_axis(bounds, tuple(style.get("figure_size", (10, 8))), dpi)
+    lon, lat = lon_lat_values(hght_values)
+    values = np.asarray(hght_values.values, dtype=float)
     finite = finite_values(values, "Height")
     if level == 500:
         if np.nanmax(finite) > 586:
@@ -474,8 +652,8 @@ def draw_hght_contour(
                 lat,
                 values,
                 levels=[586, min(588, np.nanmax(finite))],
-                colors=["yellow"],
-                alpha=0.5,
+                colors=[style["hght_500_fill"][0]["color"]],
+                alpha=style["hght_500_fill"][0]["alpha"],
                 transform=ccrs.PlateCarree(),
             )
         if np.nanmax(finite) > 588:
@@ -484,8 +662,8 @@ def draw_hght_contour(
                 lat,
                 values,
                 levels=[588, np.nanmax(finite)],
-                colors=["orange"],
-                alpha=0.5,
+                colors=[style["hght_500_fill"][1]["color"]],
+                alpha=style["hght_500_fill"][1]["alpha"],
                 transform=ccrs.PlateCarree(),
             )
         ax.contour(
@@ -493,57 +671,55 @@ def draw_hght_contour(
             lat,
             values,
             levels=np.arange(500, 600, 2),
-            colors="black",
-            linewidths=0.7,
+            colors=style["hght_500_contours"][0]["color"],
+            linewidths=style["hght_500_contours"][0]["linewidth"],
             transform=ccrs.PlateCarree(),
-            zorder=3,
+            zorder=style["hght_500_contours"][0]["zorder"],
         )
         ax.contour(
             lon,
             lat,
             values,
             levels=[588],
-            colors="red",
-            linewidths=3,
+            colors=style["hght_500_contours"][1]["color"],
+            linewidths=style["hght_500_contours"][1]["linewidth"],
             transform=ccrs.PlateCarree(),
-            zorder=4,
+            zorder=style["hght_500_contours"][1]["zorder"],
         )
         ax.contour(
             lon,
             lat,
             values,
             levels=[584],
-            colors="orange",
-            linewidths=2,
+            colors=style["hght_500_contours"][2]["color"],
+            linewidths=style["hght_500_contours"][2]["linewidth"],
             transform=ccrs.PlateCarree(),
-            zorder=4,
+            zorder=style["hght_500_contours"][2]["zorder"],
         )
     else:
-        levels = contour_levels_from_data(values, 2)
+        levels = contour_levels_from_data(values, float(style["contour_interval"]))
         ax.contour(
             lon,
             lat,
             values,
             levels=levels,
-            colors="black",
-            linewidths=0.7,
+            colors=style["contour_color"],
+            linewidths=style["contour_linewidth"],
             transform=ccrs.PlateCarree(),
         )
     save_svg(fig, output_path)
 
 
 def draw_wind_quiver(
-    u: xr.DataArray,
-    v: xr.DataArray,
+    u_smoothed: xr.DataArray,
+    v_smoothed: xr.DataArray,
     bounds: Bounds,
     output_path: Path,
     dpi: int,
-    skip: int,
-    sigma: float,
+    style: dict[str, object],
 ) -> None:
-    fig, ax = setup_axis(bounds, (10, 8), dpi)
-    u_smoothed = smooth_array(u, sigma)
-    v_smoothed = smooth_array(v, sigma)
+    skip = int(style["skip"])
+    fig, ax = setup_axis(bounds, tuple(style.get("figure_size", (10, 8))), dpi)
     lon, lat = lon_lat_values(u_smoothed)
     ax.quiver(
         lon[::skip],
@@ -551,25 +727,23 @@ def draw_wind_quiver(
         u_smoothed.values[::skip, ::skip],
         v_smoothed.values[::skip, ::skip],
         transform=ccrs.PlateCarree(),
-        scale=320,
-        width=0.0024,
-        color="#111827",
+        scale=style["scale"],
+        width=style["width"],
+        color=style["color"],
     )
     save_svg(fig, output_path)
 
 
 def draw_wind_barb(
-    u: xr.DataArray,
-    v: xr.DataArray,
+    u_smoothed: xr.DataArray,
+    v_smoothed: xr.DataArray,
     bounds: Bounds,
     output_path: Path,
     dpi: int,
-    skip: int,
-    sigma: float,
+    style: dict[str, object],
 ) -> None:
-    fig, ax = setup_axis(bounds, (10, 8), dpi)
-    u_smoothed = smooth_array(u, sigma)
-    v_smoothed = smooth_array(v, sigma)
+    skip = int(style["skip"])
+    fig, ax = setup_axis(bounds, tuple(style.get("figure_size", (10, 8))), dpi)
     lon, lat = lon_lat_values(u_smoothed)
     ax.barbs(
         lon[::skip],
@@ -577,29 +751,27 @@ def draw_wind_barb(
         u_smoothed.values[::skip, ::skip],
         v_smoothed.values[::skip, ::skip],
         transform=ccrs.PlateCarree(),
-        length=6,
-        linewidth=0.45,
-        barbcolor="blue",
-        barb_increments={"half": 2, "full": 4, "flag": 20},
-        sizes={"emptybarb": 0},
+        length=style["length"],
+        linewidth=style["linewidth"],
+        barbcolor=style["barbcolor"],
+        barb_increments=style["barb_increments"],
+        sizes=style["sizes"],
     )
     save_svg(fig, output_path)
 
 
 def draw_wind_speed_fill(
-    u: xr.DataArray,
-    v: xr.DataArray,
+    speed: xr.DataArray,
     bounds: Bounds,
     output_path: Path,
     dpi: int,
-    sigma: float,
     level: int | None,
+    style: dict[str, object],
 ) -> None:
-    fig, ax = setup_axis(bounds, (10, 8), dpi)
-    speed = smooth_array(wind_speed(u, v), sigma)
+    fig, ax = setup_axis(bounds, tuple(style.get("figure_size", (10, 8))), dpi)
     lon, lat = lon_lat_values(speed)
     finite_values(speed, "Wind speed")
-    levels, cmap, norm, extend = wind_speed_style(level)
+    levels, cmap, norm, extend = wind_speed_style(level, style)
     ax.contourf(
         lon,
         lat,
@@ -614,53 +786,50 @@ def draw_wind_speed_fill(
 
 
 def draw_wind_streamline(
-    u: xr.DataArray,
-    v: xr.DataArray,
+    u_smoothed: xr.DataArray,
+    v_smoothed: xr.DataArray,
     bounds: Bounds,
     output_path: Path,
     dpi: int,
-    sigma: float,
+    style: dict[str, object],
 ) -> None:
-    fig, ax = setup_axis(bounds, (10, 8), dpi)
-    u_smoothed = smooth_array(u, sigma)
-    v_smoothed = smooth_array(v, sigma)
+    fig, ax = setup_axis(bounds, tuple(style.get("figure_size", (10, 8))), dpi)
     lon, lat = lon_lat_values(u_smoothed)
     ax.streamplot(
         lon,
         lat,
         u_smoothed.values,
         v_smoothed.values,
-        density=1.45,
-        linewidth=0.55,
-        arrowsize=0.65,
-        color="#0f172a",
+        density=style["density"],
+        linewidth=style["linewidth"],
+        arrowsize=style["arrowsize"],
+        color=style["color"],
         transform=ccrs.PlateCarree(),
     )
     save_svg(fig, output_path)
 
 
-def draw_temp_contour(temp: xr.DataArray, bounds: Bounds, output_path: Path, dpi: int) -> None:
-    fig, ax = setup_axis(bounds, (10, 8), dpi)
-    temp_c = five_point_smooth(temperature_celsius(temp))
-    lon, lat = lon_lat_values(temp_c)
-    finite_values(temp_c, "Temperature")
+def draw_temp_contour(temp: xr.DataArray, bounds: Bounds, output_path: Path, dpi: int, style: dict[str, object]) -> None:
+    fig, ax = setup_axis(bounds, tuple(style.get("figure_size", (10, 8))), dpi)
+    lon, lat = lon_lat_values(temp)
+    finite_values(temp, "Temperature")
     ax.contour(
         lon,
         lat,
-        temp_c.values,
+        temp.values,
         levels=BOUND_TEMP,
         cmap=CLRMAP_TEMP,
         norm=NORMS_TEMP,
-        linewidths=0.7,
+        linewidths=style["contour_linewidth"],
         transform=ccrs.PlateCarree(),
     )
     save_svg(fig, output_path)
 
 
-def draw_vort_fill(vort: xr.DataArray, bounds: Bounds, output_path: Path, dpi: int) -> None:
-    fig, ax = setup_axis(bounds, (10, 8), dpi)
+def draw_vort_fill(vort: xr.DataArray, bounds: Bounds, output_path: Path, dpi: int, style: dict[str, object]) -> None:
+    fig, ax = setup_axis(bounds, tuple(style.get("figure_size", (10, 8))), dpi)
     lon, lat = lon_lat_values(vort)
-    values = np.asarray(vort.values, dtype=float) * 100000.0
+    values = np.asarray(vort.values, dtype=float)
     finite_values(values, "Vorticity")
     ax.contourf(
         lon,
@@ -669,43 +838,41 @@ def draw_vort_fill(vort: xr.DataArray, bounds: Bounds, output_path: Path, dpi: i
         levels=BOUND_VORT,
         cmap=CLRMAP_VORT,
         norm=NORMS_VORT,
-        extend="both",
+        extend=style["extend"],
         transform=ccrs.PlateCarree(),
     )
     save_svg(fig, output_path)
 
 
-def draw_rhum_fill(rhum: xr.DataArray, bounds: Bounds, output_path: Path, dpi: int) -> None:
-    fig, ax = setup_axis(bounds, (10, 8), dpi)
-    rhum_pct = relative_humidity_percent(rhum)
-    lon, lat = lon_lat_values(rhum_pct)
-    finite_values(rhum_pct, "Relative humidity")
+def draw_rhum_fill(rhum: xr.DataArray, bounds: Bounds, output_path: Path, dpi: int, style: dict[str, object]) -> None:
+    fig, ax = setup_axis(bounds, tuple(style.get("figure_size", (10, 8))), dpi)
+    lon, lat = lon_lat_values(rhum)
+    finite_values(rhum, "Relative humidity")
     ax.contourf(
         lon,
         lat,
-        rhum_pct.values,
+        rhum.values,
         levels=BOUND_RHUM,
         cmap=CLRMAP_RHUM,
         norm=NORMS_RHUM,
-        extend="both",
+        extend=style["extend"],
         transform=ccrs.PlateCarree(),
     )
     save_svg(fig, output_path)
 
 
-def draw_mslp_contour(mslp: xr.DataArray, bounds: Bounds, output_path: Path, dpi: int) -> None:
-    fig, ax = setup_axis(bounds, (10, 8), dpi)
-    mslp_values = five_point_smooth(mslp_hpa(mslp))
-    lon, lat = lon_lat_values(mslp_values)
-    values = np.asarray(mslp_values.values, dtype=float)
-    levels = contour_levels_from_data(values, 2)
+def draw_mslp_contour(mslp: xr.DataArray, bounds: Bounds, output_path: Path, dpi: int, style: dict[str, object]) -> None:
+    fig, ax = setup_axis(bounds, tuple(style.get("figure_size", (10, 8))), dpi)
+    lon, lat = lon_lat_values(mslp)
+    values = np.asarray(mslp.values, dtype=float)
+    levels = contour_levels_from_data(values, float(style["contour_interval"]))
     ax.contour(
         lon,
         lat,
         values,
         levels=levels,
-        colors="black",
-        linewidths=0.75,
+        colors=style["contour_color"],
+        linewidths=style["contour_linewidth"],
         transform=ccrs.PlateCarree(),
     )
     save_svg(fig, output_path)
@@ -743,12 +910,64 @@ def product_record(
     return record
 
 
+def product_tile_record(
+    init_time: str,
+    fc_hour: str,
+    level: str | int,
+    layer_type: str,
+    output_root: Path,
+    bounds: Bounds,
+    tiles: Iterable[tuple[Tile, Path, str, str | None]],
+    timings: dict[str, float] | None = None,
+) -> dict[str, object]:
+    init_root = output_root / init_time
+    tiles_by_z: dict[str, list[dict[str, object]]] = {}
+    status_set: set[str] = set()
+    errors: list[str] = []
+    for tile, path, status, error in tiles:
+        status_set.add(status)
+        if error:
+            errors.append(f"z={tile.z},x={tile.x},y={tile.y}: {error}")
+        tiles_by_z.setdefault(str(tile.z), []).append(
+            tile.as_dict(path, init_root, status, error)
+        )
+
+    for tile_records in tiles_by_z.values():
+        tile_records.sort(key=lambda item: (int(item["y"]), int(item["x"])))
+
+    if "failed" in status_set:
+        status = "failed"
+    elif status_set == {"skipped"}:
+        status = "skipped"
+    elif "generated" in status_set:
+        status = "generated"
+    else:
+        status = "missing"
+
+    record: dict[str, object] = {
+        "init_time": init_time,
+        "fc_hour": fc_hour,
+        "level": level,
+        "layer_type": layer_type,
+        "bounds": bounds.as_dict(),
+        "projection": "PlateCarree",
+        "status": status,
+        "tiles": dict(sorted(tiles_by_z.items(), key=lambda item: int(item[0]))),
+    }
+    if errors:
+        record["error"] = "; ".join(errors[:3])
+    if timings:
+        record["timings"] = timings
+    return record
+
+
 def ensure_manifest_shape(init_time: str, bounds: Bounds) -> dict[str, object]:
     return {
         "init_time": init_time,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "bounds": bounds.as_dict(),
         "projection": "PlateCarree",
+        "tile_scheme": tile_scheme_manifest(bounds, TILE_SCHEME["levels"]),
         "fc_hours": [],
         "levels": [],
         "layer_types": {
@@ -807,6 +1026,7 @@ def load_manifest(output_root: Path, init_time: str, bounds: Bounds) -> dict[str
     manifest["init_time"] = init_time
     manifest["bounds"] = bounds.as_dict()
     manifest["projection"] = "PlateCarree"
+    manifest["tile_scheme"] = tile_scheme_manifest(bounds, TILE_SCHEME["levels"])
     if not isinstance(manifest.get("layer_types"), dict):
         manifest["layer_types"] = {}
     layer_types = manifest["layer_types"]
@@ -883,11 +1103,58 @@ def backfill_manifest_from_existing_svgs(
         )
         backfilled += 1
 
+    tile_paths: dict[tuple[str, str, str], list[tuple[Tile, Path, str, str | None]]] = {}
+    for svg_path in init_root.glob("*/*/*/*/*/*.svg"):
+        relative_parts = svg_path.relative_to(init_root).parts
+        if len(relative_parts) != 6:
+            continue
+
+        fc_hour, level, layer_type, z_value, x_value, filename = relative_parts
+        try:
+            z = int(z_value)
+            x = int(x_value)
+            y = int(Path(filename).stem)
+        except ValueError:
+            continue
+
+        if manifest_has_record(manifest, fc_hour, level, layer_type):
+            continue
+
+        tile = Tile(z, x, y, tile_bounds(z, x, y))
+        tile_paths.setdefault((fc_hour, level, layer_type), []).append(
+            (tile, svg_path, "generated", None)
+        )
+
+    for (fc_hour, level, layer_type), tile_records in tile_paths.items():
+        add_manifest_record(
+            manifest,
+            product_tile_record(
+                init_time,
+                fc_hour,
+                level,
+                layer_type,
+                output_root,
+                bounds,
+                tile_records,
+            ),
+        )
+        backfilled += 1
+
     return backfilled
 
 
-def log_layer_result(fc_hour: str, level: str | int, layer_type: str, status: str, output_path: Path, error: str | None = None) -> None:
+def log_layer_result(
+    fc_hour: str,
+    level: str | int,
+    layer_type: str,
+    status: str,
+    output_path: Path,
+    error: str | None = None,
+    tile: Tile | None = None,
+) -> None:
     context = f"fc_hour={fc_hour}, level={level}, layer={layer_type}"
+    if tile is not None:
+        context += f", z={tile.z}, x={tile.x}, y={tile.y}"
     if status == "generated":
         print(f"  Completed SVG: {context}, path={output_path}")
     elif status == "skipped":
@@ -898,15 +1165,222 @@ def log_layer_result(fc_hour: str, level: str | int, layer_type: str, status: st
         print(f"  {status.capitalize()} SVG: {context}, path={output_path}")
 
 
+def tile_output_paths(
+    output_root: Path,
+    init_time: str,
+    fc_hour: str,
+    level: str | int,
+    layer_type: str,
+    tiles: Iterable[Tile],
+) -> list[tuple[Tile, Path]]:
+    return [
+        (tile, layer_output_path(output_root, init_time, fc_hour, level, layer_type, tile))
+        for tile in tiles
+    ]
+
+
+def all_tiles_exist(paths: Iterable[tuple[Tile, Path]]) -> bool:
+    path_list = list(paths)
+    return bool(path_list) and all(path.exists() for _, path in path_list)
+
+
+def tile_results_with_status(
+    paths: Iterable[tuple[Tile, Path]], status: str, error: str | None = None
+) -> list[tuple[Tile, Path, str, str | None]]:
+    return [(tile, path, status, error) for tile, path in paths]
+
+
+def count_tile_statuses(tile_results: Iterable[tuple[Tile, Path, str, str | None]]) -> dict[str, int]:
+    counts = {"generated": 0, "skipped": 0, "failed": 0, "missing": 0}
+    for _, _, status, _ in tile_results:
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def log_product_result(
+    fc_hour: str,
+    level: str | int,
+    layer_type: str,
+    tile_results: list[tuple[Tile, Path, str, str | None]],
+    timings: dict[str, float],
+) -> None:
+    counts = count_tile_statuses(tile_results)
+    print(
+        "  Layer "
+        f"fc_hour={fc_hour}, level={level}, layer={layer_type}: "
+        f"generated={counts.get('generated', 0)}, "
+        f"skipped={counts.get('skipped', 0)}, "
+        f"failed={counts.get('failed', 0)}, "
+        f"data={timings.get('data_load_s', 0.0):.2f}s, "
+        f"preprocess={timings.get('preprocess_s', 0.0):.2f}s, "
+        f"render={timings.get('render_s', 0.0):.2f}s, "
+        f"total={timings.get('total_s', 0.0):.2f}s",
+        flush=True,
+    )
+
+
+def maybe_log_tile_result(
+    args,
+    fc_hour: str,
+    level: str | int,
+    layer_type: str,
+    status: str,
+    output_path: Path,
+    error: str | None = None,
+    tile: Tile | None = None,
+) -> None:
+    if getattr(args, "verbose_tiles", False):
+        log_layer_result(fc_hour, level, layer_type, status, output_path, error, tile)
+
+
+def layer_style(args, layer_type: str, level: int | None, z: int) -> dict[str, object]:
+    style = style_for(layer_type, level, z)
+    style.setdefault("skip", args.skip)
+    style.setdefault("sigma", args.sigma)
+    return style
+
+
+def layer_output_path(output_root: Path, init_time: str, fc_hour: str, level: str | int, layer_type: str, tile: Tile) -> Path:
+    return output_root / init_time / fc_hour / str(level) / layer_type / str(tile.z) / str(tile.x) / f"{tile.y}.svg"
+
+
+def preprocess_upper_air_layer(
+    layer_type: str,
+    level: int,
+    style: dict[str, object],
+    fields: dict[str, xr.DataArray | tuple[xr.DataArray, xr.DataArray]],
+    preprocessed_cache: dict[tuple[object, ...], object] | None = None,
+) -> dict[str, xr.DataArray | tuple[xr.DataArray, xr.DataArray]]:
+    if preprocessed_cache is None:
+        preprocessed_cache = {}
+    if layer_type == "hght_contour":
+        hght = five_point_smooth(fields["hght"])
+        return {"hght": hght / 10.0}
+    if layer_type == "temp_contour":
+        return {"temp": five_point_smooth(temperature_celsius(fields["temp"]))}
+    if layer_type == "vort_fill":
+        return {"vort": fields["vort"] * float(style["scale_factor"])}
+    if layer_type == "rhum_fill":
+        return {"rhum": relative_humidity_percent(fields["rhum"])}
+    u, v = fields["wind"]
+    if layer_type == "wind_speed_fill":
+        key = ("upper_wind_speed", level, float(style["sigma"]))
+        if key not in preprocessed_cache:
+            preprocessed_cache[key] = smooth_array(wind_speed(u, v), float(style["sigma"]))
+        return {"speed": preprocessed_cache[key]}
+
+    key = ("upper_wind_vector", level, float(style["sigma"]))
+    if key not in preprocessed_cache:
+        preprocessed_cache[key] = (
+            smooth_array(u, float(style["sigma"])),
+            smooth_array(v, float(style["sigma"])),
+        )
+    return {"wind": preprocessed_cache[key]}
+
+
+def preprocess_surface_layer(
+    layer_type: str,
+    style: dict[str, object],
+    fields: dict[str, xr.DataArray | tuple[xr.DataArray, xr.DataArray]],
+    preprocessed_cache: dict[tuple[object, ...], object] | None = None,
+) -> dict[str, xr.DataArray | tuple[xr.DataArray, xr.DataArray]]:
+    if preprocessed_cache is None:
+        preprocessed_cache = {}
+    if layer_type == "mslp_contour":
+        return {"mslp": five_point_smooth(mslp_hpa(fields["mslp"]))}
+    u, v = fields["wind"]
+    if layer_type == "surface_speed_fill":
+        key = ("surface_wind_speed", float(style["sigma"]))
+        if key not in preprocessed_cache:
+            preprocessed_cache[key] = smooth_array(wind_speed(u, v), float(style["sigma"]))
+        return {"speed": preprocessed_cache[key]}
+
+    key = ("surface_wind_vector", float(style["sigma"]))
+    if key not in preprocessed_cache:
+        preprocessed_cache[key] = (
+            smooth_array(u, float(style["sigma"])),
+            smooth_array(v, float(style["sigma"])),
+        )
+    return {"wind": preprocessed_cache[key]}
+
+
+def crop_padding_for_layer(layer_type: str) -> float:
+    if layer_type.endswith("_contour") or layer_type.endswith("_fill"):
+        return 1.0
+    return 0.0
+
+
+def render_upper_air_tile(
+    layer_type: str,
+    level: int,
+    tile: Tile,
+    output_path: Path,
+    dpi: int,
+    style: dict[str, object],
+    fields: dict[str, xr.DataArray | tuple[xr.DataArray, xr.DataArray]],
+) -> None:
+    padding = crop_padding_for_layer(layer_type)
+    if layer_type == "hght_contour":
+        draw_hght_contour(crop_to_bounds(fields["hght"], tile.bounds, padding), level, tile.bounds, output_path, dpi, style)
+    elif layer_type == "temp_contour":
+        draw_temp_contour(crop_to_bounds(fields["temp"], tile.bounds, padding), tile.bounds, output_path, dpi, style)
+    elif layer_type == "vort_fill":
+        draw_vort_fill(crop_to_bounds(fields["vort"], tile.bounds, padding), tile.bounds, output_path, dpi, style)
+    elif layer_type == "rhum_fill":
+        draw_rhum_fill(crop_to_bounds(fields["rhum"], tile.bounds, padding), tile.bounds, output_path, dpi, style)
+    elif layer_type == "wind_speed_fill":
+        draw_wind_speed_fill(crop_to_bounds(fields["speed"], tile.bounds, padding), tile.bounds, output_path, dpi, level, style)
+    else:
+        u, v = fields["wind"]
+        u_tile = crop_to_bounds(u, tile.bounds, padding)
+        v_tile = crop_to_bounds(v, tile.bounds, padding)
+        if layer_type == "wind_quiver":
+            draw_wind_quiver(u_tile, v_tile, tile.bounds, output_path, dpi, style)
+        elif layer_type == "wind_barb":
+            draw_wind_barb(u_tile, v_tile, tile.bounds, output_path, dpi, style)
+        elif layer_type == "wind_streamline":
+            draw_wind_streamline(u_tile, v_tile, tile.bounds, output_path, dpi, style)
+
+
+def render_surface_tile(
+    layer_type: str,
+    tile: Tile,
+    output_path: Path,
+    dpi: int,
+    style: dict[str, object],
+    fields: dict[str, xr.DataArray | tuple[xr.DataArray, xr.DataArray]],
+) -> None:
+    padding = crop_padding_for_layer(layer_type)
+    if layer_type == "mslp_contour":
+        draw_mslp_contour(crop_to_bounds(fields["mslp"], tile.bounds, padding), tile.bounds, output_path, dpi, style)
+    elif layer_type == "surface_speed_fill":
+        draw_wind_speed_fill(crop_to_bounds(fields["speed"], tile.bounds, padding), tile.bounds, output_path, dpi, None, style)
+    else:
+        u, v = fields["wind"]
+        u_tile = crop_to_bounds(u, tile.bounds, padding)
+        v_tile = crop_to_bounds(v, tile.bounds, padding)
+        if layer_type == "surface_quiver":
+            draw_wind_quiver(u_tile, v_tile, tile.bounds, output_path, dpi, style)
+        elif layer_type == "surface_barb":
+            draw_wind_barb(u_tile, v_tile, tile.bounds, output_path, dpi, style)
+        elif layer_type == "surface_streamline":
+            draw_wind_streamline(u_tile, v_tile, tile.bounds, output_path, dpi, style)
+
+
 def generate_upper_air_layers(
-    args, fc_hour: str, level: int, bounds: Bounds, manifest: dict[str, object] | None = None
+    args,
+    fc_hour: str,
+    level: int,
+    bounds: Bounds,
+    manifest: dict[str, object] | None = None,
+    cache: DatasetCache | None = None,
 ) -> list[dict[str, object]]:
     output_root = Path(args.output)
-    layer_dir = output_root / args.init_time / fc_hour / str(level)
     common = {
         "init_time": args.init_time,
         "level": level,
         "bounds": bounds,
+        "cache": cache,
     }
     u_path = default_path(args.uwnd_path, args.init_time, args.source, "uwnd.nc", args.base_url_template)
     v_path = default_path(args.vwnd_path, args.init_time, args.source, "vwnd.nc", args.base_url_template)
@@ -923,59 +1397,91 @@ def generate_upper_air_layers(
     rhum_candidates = [args.rhum_var.format(fc_hour=fc_hour), f"rhum{fc_hour}", "rhum", "r"]
 
     records: list[dict[str, object]] = []
+    tiles = iter_tiles(bounds, args.tile_levels)
     wind_fields = None
+    preprocessed_cache: dict[tuple[object, ...], object] = {}
     for layer_type in HIGH_LAYER_TYPES:
-        output_path = layer_dir / f"{layer_type}.svg"
-        if args.skip_existing and output_path.exists():
-            record = product_record(
-                args.init_time, fc_hour, level, layer_type, output_path, output_root, bounds, "skipped"
+        product_start = time.perf_counter()
+        timings = {"data_load_s": 0.0, "preprocess_s": 0.0, "render_s": 0.0}
+        tile_results: list[tuple[Tile, Path, str, str | None]] = []
+        output_paths = tile_output_paths(output_root, args.init_time, fc_hour, level, layer_type, tiles)
+        if args.skip_existing and all_tiles_exist(output_paths):
+            tile_results = tile_results_with_status(output_paths, "skipped")
+            timings["total_s"] = time.perf_counter() - product_start
+            log_product_result(fc_hour, level, layer_type, tile_results, timings)
+            record = product_tile_record(
+                args.init_time, fc_hour, level, layer_type, output_root, bounds, tile_results, timings
             )
             records.append(record)
             if manifest is not None:
                 add_manifest_record(manifest, record)
-            log_layer_result(fc_hour, level, layer_type, "skipped", output_path)
             continue
 
+        fields: dict[str, xr.DataArray | tuple[xr.DataArray, xr.DataArray]] = {}
+
         try:
+            data_start = time.perf_counter()
             if layer_type == "hght_contour":
-                hght = open_data_array(hght_path, hght_candidates, **common)
-                draw_hght_contour(hght, level, bounds, output_path, args.dpi)
+                fields["hght"] = open_data_array(hght_path, hght_candidates, **common)
             elif layer_type == "temp_contour":
-                temp = open_data_array(temp_path, temp_candidates, **common)
-                draw_temp_contour(temp, bounds, output_path, args.dpi)
+                fields["temp"] = open_data_array(temp_path, temp_candidates, **common)
             elif layer_type == "vort_fill":
-                vort = open_data_array(vort_path, vort_candidates, **common)
-                draw_vort_fill(vort, bounds, output_path, args.dpi)
+                fields["vort"] = open_data_array(vort_path, vort_candidates, **common)
             elif layer_type == "rhum_fill":
-                rhum = open_data_array(rhum_path, rhum_candidates, **common)
-                draw_rhum_fill(rhum, bounds, output_path, args.dpi)
+                fields["rhum"] = open_data_array(rhum_path, rhum_candidates, **common)
             else:
                 if wind_fields is None:
                     wind_fields = (
                         open_data_array(u_path, u_candidates, **common),
                         open_data_array(v_path, v_candidates, **common),
                     )
-                u, v = wind_fields
-                if layer_type == "wind_quiver":
-                    draw_wind_quiver(u, v, bounds, output_path, args.dpi, args.skip, args.sigma)
-                elif layer_type == "wind_barb":
-                    draw_wind_barb(u, v, bounds, output_path, args.dpi, args.skip, args.sigma)
-                elif layer_type == "wind_speed_fill":
-                    draw_wind_speed_fill(u, v, bounds, output_path, args.dpi, args.sigma, level)
-                elif layer_type == "wind_streamline":
-                    draw_wind_streamline(u, v, bounds, output_path, args.dpi, args.sigma)
-
-            status = "generated"
-            error = None
+                fields["wind"] = wind_fields
+            timings["data_load_s"] = time.perf_counter() - data_start
+            preprocess_start = time.perf_counter()
+            fields = preprocess_upper_air_layer(
+                layer_type,
+                level,
+                layer_style(args, layer_type, level, min(args.tile_levels)),
+                fields,
+                preprocessed_cache,
+            )
+            timings["preprocess_s"] = time.perf_counter() - preprocess_start
         except Exception as exc:
-            status = "failed"
             error = str(exc)
-            log_layer_result(fc_hour, level, layer_type, status, output_path, error)
-        else:
-            log_layer_result(fc_hour, level, layer_type, status, output_path)
+            tile_results = tile_results_with_status(output_paths, "failed", error)
+            for tile, output_path, _, _ in tile_results:
+                maybe_log_tile_result(args, fc_hour, level, layer_type, "failed", output_path, error, tile)
+        if fields:
+            render_start = time.perf_counter()
+            for tile, output_path in output_paths:
+                if args.skip_existing and output_path.exists():
+                    tile_results.append((tile, output_path, "skipped", None))
+                    maybe_log_tile_result(args, fc_hour, level, layer_type, "skipped", output_path, tile=tile)
+                    continue
+                try:
+                    render_upper_air_tile(
+                        layer_type,
+                        level,
+                        tile,
+                        output_path,
+                        args.dpi,
+                        layer_style(args, layer_type, level, tile.z),
+                        fields,
+                    )
+                except Exception as exc:
+                    error = str(exc)
+                    tile_results.append((tile, output_path, "failed", error))
+                    maybe_log_tile_result(args, fc_hour, level, layer_type, "failed", output_path, error, tile)
+                else:
+                    tile_results.append((tile, output_path, "generated", None))
+                    maybe_log_tile_result(args, fc_hour, level, layer_type, "generated", output_path, tile=tile)
+            timings["render_s"] = time.perf_counter() - render_start
 
-        record = product_record(
-            args.init_time, fc_hour, level, layer_type, output_path, output_root, bounds, status, error
+        timings["total_s"] = time.perf_counter() - product_start
+        log_product_result(fc_hour, level, layer_type, tile_results, timings)
+
+        record = product_tile_record(
+            args.init_time, fc_hour, level, layer_type, output_root, bounds, tile_results, timings
         )
         records.append(record)
         if manifest is not None:
@@ -985,14 +1491,18 @@ def generate_upper_air_layers(
 
 
 def generate_surface_layers(
-    args, fc_hour: str, bounds: Bounds, manifest: dict[str, object] | None = None
+    args,
+    fc_hour: str,
+    bounds: Bounds,
+    manifest: dict[str, object] | None = None,
+    cache: DatasetCache | None = None,
 ) -> list[dict[str, object]]:
     output_root = Path(args.output)
-    layer_dir = output_root / args.init_time / fc_hour / "surface"
     common = {
         "init_time": args.init_time,
         "level": None,
         "bounds": bounds,
+        "cache": cache,
     }
     u_path = default_path(
         args.u10_path, args.init_time, args.source, "u10m.nc", args.base_url_template
@@ -1022,50 +1532,83 @@ def generate_surface_layers(
     mslp_candidates = [args.mslp_var.format(fc_hour=fc_hour), f"mslp{fc_hour}", "mslp", "msl"]
 
     records: list[dict[str, object]] = []
+    tiles = iter_tiles(bounds, args.tile_levels)
     wind_fields = None
+    preprocessed_cache: dict[tuple[object, ...], object] = {}
     for layer_type in SURFACE_LAYER_TYPES:
-        output_path = layer_dir / f"{layer_type}.svg"
-        if args.skip_existing and output_path.exists():
-            record = product_record(
-                args.init_time, fc_hour, "surface", layer_type, output_path, output_root, bounds, "skipped"
+        product_start = time.perf_counter()
+        timings = {"data_load_s": 0.0, "preprocess_s": 0.0, "render_s": 0.0}
+        tile_results: list[tuple[Tile, Path, str, str | None]] = []
+        output_paths = tile_output_paths(output_root, args.init_time, fc_hour, "surface", layer_type, tiles)
+        if args.skip_existing and all_tiles_exist(output_paths):
+            tile_results = tile_results_with_status(output_paths, "skipped")
+            timings["total_s"] = time.perf_counter() - product_start
+            log_product_result(fc_hour, "surface", layer_type, tile_results, timings)
+            record = product_tile_record(
+                args.init_time, fc_hour, "surface", layer_type, output_root, bounds, tile_results, timings
             )
             records.append(record)
             if manifest is not None:
                 add_manifest_record(manifest, record)
-            log_layer_result(fc_hour, "surface", layer_type, "skipped", output_path)
             continue
 
+        fields: dict[str, xr.DataArray | tuple[xr.DataArray, xr.DataArray]] = {}
+
         try:
+            data_start = time.perf_counter()
             if layer_type == "mslp_contour":
-                mslp = open_data_array(mslp_path, mslp_candidates, **common)
-                draw_mslp_contour(mslp, bounds, output_path, args.dpi)
+                fields["mslp"] = open_data_array(mslp_path, mslp_candidates, **common)
             else:
                 if wind_fields is None:
                     wind_fields = (
                         open_data_array(u_path, u_candidates, **common),
                         open_data_array(v_path, v_candidates, **common),
                     )
-                u, v = wind_fields
-                if layer_type == "surface_quiver":
-                    draw_wind_quiver(u, v, bounds, output_path, args.dpi, args.skip, args.sigma)
-                elif layer_type == "surface_barb":
-                    draw_wind_barb(u, v, bounds, output_path, args.dpi, args.skip, args.sigma)
-                elif layer_type == "surface_speed_fill":
-                    draw_wind_speed_fill(u, v, bounds, output_path, args.dpi, args.sigma, None)
-                elif layer_type == "surface_streamline":
-                    draw_wind_streamline(u, v, bounds, output_path, args.dpi, args.sigma)
-
-            status = "generated"
-            error = None
+                fields["wind"] = wind_fields
+            timings["data_load_s"] = time.perf_counter() - data_start
+            preprocess_start = time.perf_counter()
+            fields = preprocess_surface_layer(
+                layer_type,
+                layer_style(args, layer_type, None, min(args.tile_levels)),
+                fields,
+                preprocessed_cache,
+            )
+            timings["preprocess_s"] = time.perf_counter() - preprocess_start
         except Exception as exc:
-            status = "failed"
             error = str(exc)
-            log_layer_result(fc_hour, "surface", layer_type, status, output_path, error)
-        else:
-            log_layer_result(fc_hour, "surface", layer_type, status, output_path)
+            tile_results = tile_results_with_status(output_paths, "failed", error)
+            for tile, output_path, _, _ in tile_results:
+                maybe_log_tile_result(args, fc_hour, "surface", layer_type, "failed", output_path, error, tile)
+        if fields:
+            render_start = time.perf_counter()
+            for tile, output_path in output_paths:
+                if args.skip_existing and output_path.exists():
+                    tile_results.append((tile, output_path, "skipped", None))
+                    maybe_log_tile_result(args, fc_hour, "surface", layer_type, "skipped", output_path, tile=tile)
+                    continue
+                try:
+                    render_surface_tile(
+                        layer_type,
+                        tile,
+                        output_path,
+                        args.dpi,
+                        layer_style(args, layer_type, None, tile.z),
+                        fields,
+                    )
+                except Exception as exc:
+                    error = str(exc)
+                    tile_results.append((tile, output_path, "failed", error))
+                    maybe_log_tile_result(args, fc_hour, "surface", layer_type, "failed", output_path, error, tile)
+                else:
+                    tile_results.append((tile, output_path, "generated", None))
+                    maybe_log_tile_result(args, fc_hour, "surface", layer_type, "generated", output_path, tile=tile)
+            timings["render_s"] = time.perf_counter() - render_start
 
-        record = product_record(
-            args.init_time, fc_hour, "surface", layer_type, output_path, output_root, bounds, status, error
+        timings["total_s"] = time.perf_counter() - product_start
+        log_product_result(fc_hour, "surface", layer_type, tile_results, timings)
+
+        record = product_tile_record(
+            args.init_time, fc_hour, "surface", layer_type, output_root, bounds, tile_results, timings
         )
         records.append(record)
         if manifest is not None:
@@ -1074,15 +1617,31 @@ def generate_surface_layers(
     return records
 
 
+def write_json_atomic(path: Path, payload: dict[str, object]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(path)
+    return path
+
+
 def write_manifest(output_root: Path, init_time: str, manifest: dict[str, object]) -> Path:
     rebuild_manifest_indexes(manifest)
     manifest["generated_at"] = datetime.now(timezone.utc).isoformat()
     manifest["fc_hours"] = sorted(manifest["fc_hours"])
     manifest["levels"] = sorted(manifest["levels"], key=lambda item: (item == "surface", str(item)))
     manifest_path = output_root / init_time / "manifest.json"
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    return manifest_path
+    return write_json_atomic(manifest_path, manifest)
+
+
+def write_generation_stats(output_root: Path, init_time: str, stats: list[dict[str, object]]) -> Path:
+    stats_path = output_root / init_time / "generation_stats.json"
+    payload: dict[str, object] = {
+        "init_time": init_time,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "jobs": stats,
+    }
+    return write_json_atomic(stats_path, payload)
 
 
 def default_worker_count() -> int:
@@ -1092,6 +1651,9 @@ def default_worker_count() -> int:
 def build_generation_jobs(args, fc_hours: list[str]) -> list[tuple[str, str, int | None]]:
     jobs: list[tuple[str, str, int | None]] = []
     for fc_hour in fc_hours:
+        if args.schedule == "fc-hour":
+            jobs.append(("fc_hour", fc_hour, None))
+            continue
         if not args.surface_only:
             for level in args.levels:
                 jobs.append(("upper_air", fc_hour, level))
@@ -1102,14 +1664,32 @@ def build_generation_jobs(args, fc_hours: list[str]) -> list[tuple[str, str, int
 
 def run_generation_job(
     args, bounds: Bounds, job: tuple[str, str, int | None]
-) -> list[dict[str, object]]:
+) -> dict[str, object]:
+    job_start = time.perf_counter()
+    cache = DatasetCache()
     layer_group, fc_hour, level = job
-    if layer_group == "upper_air":
-        assert level is not None
-        return generate_upper_air_layers(args, fc_hour, level, bounds)
-    if layer_group == "surface":
-        return generate_surface_layers(args, fc_hour, bounds)
-    raise ValueError(f"Unknown generation job type: {layer_group}")
+    try:
+        records: list[dict[str, object]] = []
+        if layer_group == "fc_hour":
+            if not args.surface_only:
+                for selected_level in args.levels:
+                    records.extend(generate_upper_air_layers(args, fc_hour, selected_level, bounds, cache=cache))
+            if not args.upper_only:
+                records.extend(generate_surface_layers(args, fc_hour, bounds, cache=cache))
+        elif layer_group == "upper_air":
+            assert level is not None
+            records = generate_upper_air_layers(args, fc_hour, level, bounds, cache=cache)
+        elif layer_group == "surface":
+            records = generate_surface_layers(args, fc_hour, bounds, cache=cache)
+        else:
+            raise ValueError(f"Unknown generation job type: {layer_group}")
+        return {
+            "job": {"type": layer_group, "fc_hour": fc_hour, "level": level},
+            "records": records,
+            "total_s": time.perf_counter() - job_start,
+        }
+    finally:
+        cache.close()
 
 
 def add_manifest_records(manifest: dict[str, object], records: Iterable[dict[str, object]]) -> None:
@@ -1117,27 +1697,73 @@ def add_manifest_records(manifest: dict[str, object], records: Iterable[dict[str
         add_manifest_record(manifest, record)
 
 
+def generation_stats_from_result(result: dict[str, object]) -> dict[str, object]:
+    records = result.get("records", [])
+    product_stats: list[dict[str, object]] = []
+    if isinstance(records, list):
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            product_stats.append(
+                {
+                    "fc_hour": record.get("fc_hour"),
+                    "level": record.get("level"),
+                    "layer_type": record.get("layer_type"),
+                    "status": record.get("status"),
+                    "timings": record.get("timings", {}),
+                }
+            )
+    return {
+        "job": result.get("job", {}),
+        "total_s": result.get("total_s", 0.0),
+        "products": product_stats,
+    }
+
+
 def run_generation_jobs(
     args, fc_hours: list[str], bounds: Bounds, manifest: dict[str, object]
-) -> None:
+) -> list[dict[str, object]]:
     jobs = build_generation_jobs(args, fc_hours)
     if not jobs:
-        return
+        return []
 
-    workers = min(args.workers, len(jobs))
+    worker_limit = args.workers
+    if args.data_workers is not None:
+        worker_limit = min(worker_limit, args.data_workers)
+    workers = min(worker_limit, len(jobs))
+    stats: list[dict[str, object]] = []
+    completed_jobs = 0
     if workers <= 1:
         for job in jobs:
-            add_manifest_records(manifest, run_generation_job(args, bounds, job))
-        return
+            result = run_generation_job(args, bounds, job)
+            records = result["records"]
+            assert isinstance(records, list)
+            add_manifest_records(manifest, records)
+            stats.append(generation_stats_from_result(result))
+            completed_jobs += 1
+            if completed_jobs % args.manifest_checkpoint_interval == 0:
+                write_manifest(Path(args.output), args.init_time, manifest)
+        return stats
 
-    print(f"Using parallel SVG generation workers: {workers}", flush=True)
+    print(
+        f"Using parallel SVG generation workers: {workers}, schedule={args.schedule}",
+        flush=True,
+    )
     with ProcessPoolExecutor(max_workers=workers) as executor:
         future_to_job = {
             executor.submit(run_generation_job, args, bounds, job): job
             for job in jobs
         }
         for future in as_completed(future_to_job):
-            add_manifest_records(manifest, future.result())
+            result = future.result()
+            records = result["records"]
+            assert isinstance(records, list)
+            add_manifest_records(manifest, records)
+            stats.append(generation_stats_from_result(result))
+            completed_jobs += 1
+            if completed_jobs % args.manifest_checkpoint_interval == 0:
+                write_manifest(Path(args.output), args.init_time, manifest)
+    return stats
 
 
 def parse_args() -> argparse.Namespace:
@@ -1207,9 +1833,46 @@ def parse_args() -> argparse.Namespace:
         default=default_worker_count(),
         help="Parallel worker process count. Defaults to CPU thread count minus 1.",
     )
+    parser.add_argument(
+        "--data-workers",
+        "--max-remote-workers",
+        dest="data_workers",
+        type=int,
+        default=None,
+        help="Maximum concurrent data-reading workers. Defaults to --workers.",
+    )
+    parser.add_argument(
+        "--schedule",
+        choices=("fc-hour", "product"),
+        default="fc-hour",
+        help="Parallel scheduling unit. fc-hour groups all products for one forecast hour in one worker.",
+    )
+    parser.add_argument(
+        "--manifest-checkpoint-interval",
+        type=int,
+        default=1,
+        help="Write manifest.json after every N completed jobs. Defaults to 1.",
+    )
+    parser.add_argument(
+        "--no-backfill",
+        action="store_true",
+        help="Skip startup scan of existing SVG files and rely on manifest plus expected tile-path checks.",
+    )
+    parser.add_argument(
+        "--verbose-tiles",
+        action="store_true",
+        help="Print one log line per tile instead of product-level summaries only.",
+    )
     parser.add_argument("--dpi", type=int, default=150)
     parser.add_argument("--skip", type=int, default=8, help="Vector/barb grid skip.")
     parser.add_argument("--sigma", type=float, default=2.0, help="Gaussian smoothing sigma.")
+    parser.add_argument(
+        "--tile-levels",
+        nargs="+",
+        type=int,
+        default=list(TILE_SCHEME["levels"]),
+        help="Tile zoom levels to generate. Defaults to 0 1 2.",
+    )
     return parser.parse_args()
 
 
@@ -1219,23 +1882,33 @@ def main() -> None:
         args.init_time = calLatestBaseTime()
     if args.workers < 1:
         raise ValueError("--workers must be at least 1")
+    if args.data_workers is not None and args.data_workers < 1:
+        raise ValueError("--data-workers must be at least 1")
+    if args.manifest_checkpoint_interval < 1:
+        raise ValueError("--manifest-checkpoint-interval must be at least 1")
+    args.tile_levels = sorted(set(args.tile_levels))
     bounds = Bounds(*args.bounds)
     output_root = Path(args.output)
     fc_hours = [format_fc_hour(fc_hour) for fc_hour in args.fc_hours]
     manifest = load_manifest(output_root, args.init_time, bounds)
-    backfilled = backfill_manifest_from_existing_svgs(output_root, args.init_time, bounds, manifest)
-    if backfilled:
-        print(f"Backfilled manifest records from existing SVG files: {backfilled}", flush=True)
+    manifest["tile_scheme"] = tile_scheme_manifest(bounds, args.tile_levels)
+    if not args.no_backfill:
+        backfilled = backfill_manifest_from_existing_svgs(output_root, args.init_time, bounds, manifest)
+        if backfilled:
+            print(f"Backfilled manifest records from existing SVG files: {backfilled}", flush=True)
     print(
         f"Start SVG layer generation: init_time={args.init_time}, "
-        f"fc_hours={len(fc_hours)}, levels={len(args.levels)}, workers={args.workers}",
+        f"fc_hours={len(fc_hours)}, levels={len(args.levels)}, workers={args.workers}, "
+        f"schedule={args.schedule}",
         flush=True,
     )
 
-    run_generation_jobs(args, fc_hours, bounds, manifest)
+    stats = run_generation_jobs(args, fc_hours, bounds, manifest)
 
     manifest_path = write_manifest(output_root, args.init_time, manifest)
     print(f"Wrote manifest: {manifest_path}", flush=True)
+    stats_path = write_generation_stats(output_root, args.init_time, stats)
+    print(f"Wrote generation stats: {stats_path}", flush=True)
 
 
 if __name__ == "__main__":
