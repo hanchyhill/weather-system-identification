@@ -50,6 +50,7 @@ const {
   showJetAxes,
   showRawPoints,
   showSvgLayer,
+  showTileDebug,
   showTooltip,
   showTrough,
   showVortexCenters,
@@ -186,6 +187,7 @@ const {
     <section class="switch-list">
       <label><span>SVG 图层</span><n-switch v-model:value="showSvgLayer" size="small" /></label>
       <label><span>属性提示</span><n-switch v-model:value="showTooltip" size="small" /></label>
+      <label><span>瓦片调试</span><n-switch v-model:value="showTileDebug" size="small" /></label>
     </section>
 
     <section class="system-config">

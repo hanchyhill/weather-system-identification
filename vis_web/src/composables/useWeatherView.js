@@ -6,7 +6,7 @@ import { SvgImageCache } from '../utils/indexedDBCache'
 
 export function useWeatherView() {
 
-const DEFAULT_INIT_TIME = '2026062900'
+const DEFAULT_INIT_TIME = '2026070212'
 const DEFAULT_FC_HOURS = [
   '000', '003', '006', '009', '012', '015', '018', '021', '024',
   '027', '030', '033', '036', '039', '042', '045', '048', '051',
@@ -44,14 +44,14 @@ const zoomTransform = ref(d3.zoomIdentity)
 const projectionName = ref('equirectangular')
 const initTime = ref(DEFAULT_INIT_TIME)
 const fcHour = ref('000')
-const level = ref('500')
+const level = ref('850')
 const layerType = ref('wind_speed_fill')
 const manifest = ref(null)
 const worldFeatures = ref(null)
 const activeSvgLayers = ref([])
-const selectedLayerTypes = ref(['wind_speed_fill'])
-const layerCombinationName = ref('风速填色')
-const activeLayerCombinationName = ref('风速填色')
+const selectedLayerTypes = ref(['wind_speed_fill', 'hght_contour', 'wind_barb'])
+const layerCombinationName = ref('默认天气图')
+const activeLayerCombinationName = ref('默认天气图')
 const savedLayerCombinations = ref(loadSavedLayerCombinations())
 const troughData = ref(null)
 const jetData = ref(null)
@@ -66,6 +66,7 @@ const showVortexTracks = ref(true)
 const showWarmOnlyTracks = ref(false)
 const showWarmOnlyCenters = ref(false)
 const showTooltip = ref(true)
+const showTileDebug = ref(false)
 const activeSystemTab = ref('trough')
 const troughMinLength = ref(0)
 const troughMinWindSpeed = ref(0)
@@ -82,7 +83,7 @@ const jetMinMaxWindSpeed = ref(0)
 const jetLineWidth = ref(2.2)
 const showJetArrowHeads = ref(true)
 const vortexMinWindSpeed = ref(0)
-const vortexMinVorticity = ref(0)
+const vortexMinVorticity = ref(0.00006)
 const vortexTrackMinWindSpeed = ref(0)
 const showFutureVortexTracks = ref(true)
 const loadingState = reactive({
@@ -685,6 +686,7 @@ function drawMap() {
   drawJetAxes(context, projection)
   drawVortexTracks(context, projection)
   drawVortexCenters(context, projection)
+  drawTileDebug(context, projection)
 
   context.restore()
   drawHudFrame(context)
@@ -759,7 +761,7 @@ function drawSvgImage(context, projection, image, bounds, layer) {
   context.imageSmoothingEnabled = true
   context.imageSmoothingQuality = 'high'
   context.drawImage(
-    layer.image,
+    image,
     topLeft[0],
     topLeft[1],
     bottomRight[0] - topLeft[0],
@@ -965,10 +967,70 @@ function drawVortexCenters(context, projection) {
   }
 }
 
+function drawTileDebug(context, projection) {
+  if (!showTileDebug.value) return
+
+  const k = zoomTransform.value.k
+  const z = getTileZoom(k)
+  const record = selectedLayerTypes.value
+    .map((type) => recordForLayerType(type))
+    .find((item) => hasTiles(item))
+  if (!record) return
+
+  const tiles = tilesForRecord(record, z)
+  if (!tiles.length) return
+
+  context.save()
+  for (const tile of tiles) {
+    const bounds = tile.bounds
+    if (!bounds) continue
+    const topLeft = projection([bounds.lon_min, bounds.lat_max])
+    const bottomRight = projection([bounds.lon_max, bounds.lat_min])
+    if (!topLeft || !bottomRight) continue
+
+    const width = bottomRight[0] - topLeft[0]
+    const height = bottomRight[1] - topLeft[1]
+
+    context.strokeStyle = 'rgba(220, 38, 38, 0.9)'
+    context.lineWidth = 1.4 / k
+    context.setLineDash([6 / k, 4 / k])
+    context.strokeRect(topLeft[0], topLeft[1], width, height)
+    context.setLineDash([])
+
+    const centerX = topLeft[0] + width / 2
+    const centerY = topLeft[1] + height / 2
+    context.textAlign = 'center'
+    context.textBaseline = 'middle'
+    context.fillStyle = 'rgba(220, 38, 38, 0.95)'
+    context.font = `700 ${14 / k}px Menlo, Consolas, monospace`
+    context.fillText(`z${tile.z} x${tile.x} y${tile.y}`, centerX, centerY - 8 / k)
+    context.font = `500 ${12 / k}px Menlo, Consolas, monospace`
+    context.fillText(`k=${k.toFixed(2)}`, centerX, centerY + 9 / k)
+  }
+  context.restore()
+}
+
 function drawHudFrame(context) {
   context.strokeStyle = '#bcc7d3'
   context.lineWidth = 1
   context.strokeRect(0.5, 0.5, canvasSize.width - 1, canvasSize.height - 1)
+
+  if (showTileDebug.value) {
+    const z = getTileZoom(zoomTransform.value.k)
+    const text = `瓦片调试  k=${zoomTransform.value.k.toFixed(2)}  z=${z}`
+    context.font = '600 12px Menlo, Consolas, monospace'
+    context.textAlign = 'left'
+    context.textBaseline = 'top'
+    const paddingX = 8
+    const paddingY = 5
+    const metrics = context.measureText(text)
+    const boxWidth = metrics.width + paddingX * 2
+    const boxHeight = 22
+    context.fillStyle = 'rgba(15, 23, 42, 0.82)'
+    context.fillRect(8, 8, boxWidth, boxHeight)
+    context.fillStyle = '#f8fafc'
+    context.fillText(text, 8 + paddingX, 8 + paddingY)
+  }
 }
 
 function findNearestLine(mouse) {
@@ -1083,11 +1145,14 @@ async function loadManifest() {
   try {
     manifest.value = await fetchJson(`/data/products/${initTime.value}/manifest.json`)
     loadingState.manifest = '完成'
-    const firstLevel = manifest.value.levels?.find((item) => item !== 'surface') || manifest.value.levels?.[0]
+    const manifestLevels = (manifest.value.levels || []).map(String)
     if (manifestFcHourSet.value && !manifestFcHourSet.value.has(fcHour.value)) {
       fcHour.value = firstAvailableFcHour.value
     }
-    if (firstLevel) level.value = String(firstLevel)
+    if (!manifestLevels.includes(String(level.value))) {
+      const firstLevel = manifest.value.levels?.find((item) => item !== 'surface') || manifest.value.levels?.[0]
+      if (firstLevel) level.value = String(firstLevel)
+    }
     if (!layerOptions.value.some((item) => item.value === layerType.value)) {
       layerType.value = layerOptions.value[0]?.value || layerType.value
     }
@@ -1419,6 +1484,7 @@ const context = {
   showJetAxes,
   showRawPoints,
   showSvgLayer,
+  showTileDebug,
   showTooltip,
   showTrough,
   showVortexCenters,
@@ -1470,6 +1536,7 @@ watch([
   showWarmOnlyTracks,
   showWarmOnlyCenters,
   showTooltip,
+  showTileDebug,
   troughMinLength,
   troughMinWindSpeed,
   troughLineWidth,
@@ -1498,7 +1565,7 @@ onMounted(async () => {
   if (shellRef.value) resizeObserver.observe(shellRef.value)
 
   zoomBehavior = d3.zoom()
-    .scaleExtent([0.6, 10])
+    .scaleExtent([0.6, 40])
     .on('zoom', (event) => {
       zoomTransform.value = event.transform
       const nextTileZoom = getTileZoom(event.transform.k)
