@@ -740,7 +740,7 @@ function drawMap() {
 }
 
 function trackColor(track) {
-  return track.warm ? '#7f1d1d' : '#1e3a8a'
+  return track.warm ? '#f97316' : '#0ea5e9'
 }
 
 function drawBaseMap(context, path) {
