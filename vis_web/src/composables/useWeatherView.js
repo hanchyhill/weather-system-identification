@@ -16,15 +16,17 @@ const DEFAULT_FC_HOURS = [
   '198', '204', '210', '216', '222', '228', '234', '240'
 ]
 const DEFAULT_LEVELS = ['200', '500', '700', '850', '925', '950', '1000']
+const VORTEX_TRACK_LEVELS = new Set(['850', '925', '950', '1000', 'surface'])
 const DEFAULT_MAP_BOUNDS = { lon_min: 60, lon_max: 150, lat_min: 0, lat_max: 60 }
 const DEFAULT_MAP_CENTER = [105, 30]
 const DEFAULT_MAP_SCALE = 3
-const SHEAR_COLORS = {
-  shear_u_left: '#2563eb',
-  shear_u_right: '#16a34a',
-  shear_v_up: '#dc2626',
-  shear_v_down: '#f97316'
-}
+const TROUGH_DEFAULT_COLOR = '#8B4513'
+const SHEAR_COLORS = reactive({
+  shear_u_left: TROUGH_DEFAULT_COLOR,
+  shear_u_right: TROUGH_DEFAULT_COLOR,
+  shear_v_up: TROUGH_DEFAULT_COLOR,
+  shear_v_down: TROUGH_DEFAULT_COLOR
+})
 const WORLD_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
 const LAYER_COMBINATION_STORAGE_KEY = 'weather-view-layer-combinations'
 const FILL_LAYER_TYPES = new Set(['wind_speed_fill', 'vort_fill', 'rhum_fill', 'surface_speed_fill'])
@@ -71,12 +73,35 @@ const activeSystemTab = ref('trough')
 const troughMinLength = ref(0)
 const troughMinWindSpeed = ref(3.0)
 const troughLineWidth = ref(1.2)
-const troughShearFilters = reactive({
+const DEFAULT_SHEAR_FILTERS = {
   shear_u_left: true,
   shear_u_right: true,
   shear_v_up: true,
   shear_v_down: true
-})
+}
+const LEVEL_SHEAR_DEFAULTS = {
+  '1000': { shear_u_left: true, shear_u_right: true, shear_v_up: false, shear_v_down: false },
+  '950': { shear_u_left: true, shear_u_right: true, shear_v_up: false, shear_v_down: false },
+  '925': { shear_u_left: true, shear_u_right: true, shear_v_up: false, shear_v_down: false },
+  '850': { shear_u_left: true, shear_u_right: true, shear_v_up: false, shear_v_down: false },
+  '500': { shear_u_left: false, shear_u_right: false, shear_v_up: true, shear_v_down: true },
+  '200': { shear_u_left: false, shear_u_right: false, shear_v_up: true, shear_v_down: true }
+}
+const troughShearFiltersByLevel = reactive({})
+
+function defaultShearFiltersForLevel(levelValue) {
+  return { ...(LEVEL_SHEAR_DEFAULTS[String(levelValue)] || DEFAULT_SHEAR_FILTERS) }
+}
+
+function shearFiltersForLevel(levelValue) {
+  const key = String(levelValue)
+  if (!troughShearFiltersByLevel[key]) {
+    troughShearFiltersByLevel[key] = defaultShearFiltersForLevel(key)
+  }
+  return troughShearFiltersByLevel[key]
+}
+
+const troughShearFilters = computed(() => shearFiltersForLevel(level.value))
 const jetMinAxisLength = ref(6.5)
 const jetMinAvgWindSpeed = ref(6)
 const jetMinMaxWindSpeed = ref(0)
@@ -244,7 +269,7 @@ const visibleTroughLines = computed(() => {
   const lines = troughData.value?.trough_lines || []
   return lines.filter((line) => {
     const attributes = line.attributes || {}
-    return troughShearFilters[line.shear_type] !== false
+    return troughShearFilters.value[line.shear_type] !== false
       && passesMinimum(attributes.length, troughMinLength.value)
       && passesMinimum(attributes.avg_wind_speed, troughMinWindSpeed.value)
   })
@@ -270,8 +295,10 @@ const visibleVortexCenters = computed(() => {
   ))
 })
 
+const isVortexTrackLevel = computed(() => VORTEX_TRACK_LEVELS.has(String(level.value)))
+
 const visibleVortexTracks = computed(() => {
-  if (String(level.value) !== '850' || !showVortexTracks.value) return []
+  if (!isVortexTrackLevel.value || !showVortexTracks.value) return []
   const tracks = vortexTracks.value?.tracks || []
   return tracks.filter((track) => (
     (!showWarmOnlyTracks.value || track.warm)
@@ -1482,6 +1509,7 @@ const context = {
   hoverVortexCenter,
   hoverVortexTrack,
   initTime,
+  isVortexTrackLevel,
   jetLineWidth,
   jetMinAvgWindSpeed,
   jetMinAxisLength,

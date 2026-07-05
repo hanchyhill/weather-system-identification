@@ -25,6 +25,7 @@ const {
   fcHourOptions,
   handleLayerTypeChange,
   initTime,
+  isVortexTrackLevel,
   jetLineWidth,
   jetMinAvgWindSpeed,
   jetMinAxisLength,
@@ -241,8 +242,8 @@ const {
           <n-switch v-model:value="showVortexCenters" size="small" />
         </div>
         <div class="option-row">
-          <span>850hPa 轨迹</span>
-          <n-switch v-model:value="showVortexTracks" size="small" :disabled="level !== '850'" />
+          <span>涡旋轨迹</span>
+          <n-switch v-model:value="showVortexTracks" size="small" :disabled="!isVortexTrackLevel" />
         </div>
         <div class="option-row">
           <span>仅暖心中心</span>
@@ -250,11 +251,11 @@ const {
         </div>
         <div class="option-row">
           <span>仅暖心轨迹</span>
-          <n-switch v-model:value="showWarmOnlyTracks" size="small" :disabled="level !== '850'" />
+          <n-switch v-model:value="showWarmOnlyTracks" size="small" :disabled="!isVortexTrackLevel" />
         </div>
         <div class="option-row">
           <span>未来轨迹</span>
-          <n-switch v-model:value="showFutureVortexTracks" size="small" :disabled="level !== '850'" />
+          <n-switch v-model:value="showFutureVortexTracks" size="small" :disabled="!isVortexTrackLevel" />
         </div>
         <div class="option-list">
           <label>
@@ -267,7 +268,7 @@ const {
           </label>
           <label>
             <span>轨迹最小最大风</span>
-            <n-input-number v-model:value="vortexTrackMinWindSpeed" size="small" :min="0" :step="1" :precision="1" :disabled="level !== '850'" />
+            <n-input-number v-model:value="vortexTrackMinWindSpeed" size="small" :min="0" :step="1" :precision="1" :disabled="!isVortexTrackLevel" />
           </label>
         </div>
       </div>
@@ -309,7 +310,7 @@ const {
       <div><span>槽线</span><n-tag size="small" :bordered="false">{{ loadingState.trough }}</n-tag></div>
       <div><span>急流轴</span><n-tag size="small" :bordered="false">{{ loadingState.jet }}</n-tag></div>
       <div><span>涡旋中心</span><n-tag size="small" :bordered="false">{{ loadingState.vortexCenters }}</n-tag></div>
-      <div><span>涡旋轨迹</span><n-tag size="small" :bordered="false">{{ level === '850' ? loadingState.vortexTracks : '仅850hPa显示' }}</n-tag></div>
+      <div><span>涡旋轨迹</span><n-tag size="small" :bordered="false">{{ isVortexTrackLevel ? loadingState.vortexTracks : '该层不显示轨迹' }}</n-tag></div>
       <div><span>图层状态</span><n-tag size="small" :bordered="false">{{ layerStatus }}</n-tag></div>
       <div><span>槽线数量</span><strong>{{ visibleTroughCount }}</strong></div>
       <div><span>急流轴数量</span><strong>{{ visibleJetAxisCount }}</strong></div>
