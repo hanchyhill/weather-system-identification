@@ -470,6 +470,26 @@ function tilesForRecord(record, z) {
   return Array.isArray(tiles) ? tiles : []
 }
 
+function availableTileZooms(record) {
+  if (!hasTiles(record)) return []
+  return Object.keys(record.tiles)
+    .map((value) => Number.parseInt(value, 10))
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => left - right)
+}
+
+function resolveTileZoom(record, desiredZ) {
+  const availableZooms = availableTileZooms(record)
+  if (!availableZooms.length) return null
+
+  const desired = Number.parseInt(desiredZ, 10)
+  if (availableZooms.includes(desired)) return desired
+
+  const lowerOrEqual = availableZooms.filter((value) => value <= desired)
+  if (lowerOrEqual.length) return lowerOrEqual[lowerOrEqual.length - 1]
+  return availableZooms[0]
+}
+
 function tileUrl(tile) {
   if (!tile?.path) return null
   return `/data/products/${initTime.value}/${tile.path}`
@@ -702,7 +722,7 @@ function drawBaseMap(context, path) {
   context.beginPath()
   path(worldFeatures.value)
   context.strokeStyle = 'rgba(48, 60, 76, 0.78)'
-  context.lineWidth = 0.72 / zoomTransform.value.k
+  context.lineWidth = 2 / zoomTransform.value.k
   context.stroke()
 }
 
@@ -971,41 +991,37 @@ function drawTileDebug(context, projection) {
   if (!showTileDebug.value) return
 
   const k = zoomTransform.value.k
-  const z = getTileZoom(k)
-  const record = selectedLayerTypes.value
-    .map((type) => recordForLayerType(type))
-    .find((item) => hasTiles(item))
-  if (!record) return
-
-  const tiles = tilesForRecord(record, z)
-  if (!tiles.length) return
+  const debugLayers = activeSvgLayers.value.filter((layer) => Array.isArray(layer.tiles) && layer.tiles.length)
+  if (!debugLayers.length) return
 
   context.save()
-  for (const tile of tiles) {
-    const bounds = tile.bounds
-    if (!bounds) continue
-    const topLeft = projection([bounds.lon_min, bounds.lat_max])
-    const bottomRight = projection([bounds.lon_max, bounds.lat_min])
-    if (!topLeft || !bottomRight) continue
+  for (const layer of debugLayers) {
+    for (const tile of layer.tiles) {
+      const bounds = tile.bounds
+      if (!bounds) continue
+      const topLeft = projection([bounds.lon_min, bounds.lat_max])
+      const bottomRight = projection([bounds.lon_max, bounds.lat_min])
+      if (!topLeft || !bottomRight) continue
 
-    const width = bottomRight[0] - topLeft[0]
-    const height = bottomRight[1] - topLeft[1]
+      const width = bottomRight[0] - topLeft[0]
+      const height = bottomRight[1] - topLeft[1]
 
-    context.strokeStyle = 'rgba(220, 38, 38, 0.9)'
-    context.lineWidth = 1.4 / k
-    context.setLineDash([6 / k, 4 / k])
-    context.strokeRect(topLeft[0], topLeft[1], width, height)
-    context.setLineDash([])
+      context.strokeStyle = 'rgba(220, 38, 38, 0.9)'
+      context.lineWidth = 1.4 / k
+      context.setLineDash([6 / k, 4 / k])
+      context.strokeRect(topLeft[0], topLeft[1], width, height)
+      context.setLineDash([])
 
-    const centerX = topLeft[0] + width / 2
-    const centerY = topLeft[1] + height / 2
-    context.textAlign = 'center'
-    context.textBaseline = 'middle'
-    context.fillStyle = 'rgba(220, 38, 38, 0.95)'
-    context.font = `700 ${14 / k}px Menlo, Consolas, monospace`
-    context.fillText(`z${tile.z} x${tile.x} y${tile.y}`, centerX, centerY - 8 / k)
-    context.font = `500 ${12 / k}px Menlo, Consolas, monospace`
-    context.fillText(`k=${k.toFixed(2)}`, centerX, centerY + 9 / k)
+      const centerX = topLeft[0] + width / 2
+      const centerY = topLeft[1] + height / 2
+      context.textAlign = 'center'
+      context.textBaseline = 'middle'
+      context.fillStyle = 'rgba(220, 38, 38, 0.95)'
+      context.font = `700 ${14 / k}px Menlo, Consolas, monospace`
+      context.fillText(`${layer.type} z${tile.z}`, centerX, centerY - 8 / k)
+      context.font = `500 ${12 / k}px Menlo, Consolas, monospace`
+      context.fillText(`x${tile.x} y${tile.y} k=${k.toFixed(2)}`, centerX, centerY + 9 / k)
+    }
   }
   context.restore()
 }
@@ -1017,7 +1033,13 @@ function drawHudFrame(context) {
 
   if (showTileDebug.value) {
     const z = getTileZoom(zoomTransform.value.k)
-    const text = `瓦片调试  k=${zoomTransform.value.k.toFixed(2)}  z=${z}`
+    const actualZoomItems = activeSvgLayers.value
+      .filter((layer) => Number.isFinite(layer.z))
+      .map((layer) => `${layer.type}:z${layer.z}`)
+    const actualZooms = actualZoomItems.length > 4
+      ? `${actualZoomItems.slice(0, 4).join('  ')}  +${actualZoomItems.length - 4}`
+      : actualZoomItems.join('  ')
+    const text = `瓦片调试  k=${zoomTransform.value.k.toFixed(2)}  期望z=${z}${actualZooms ? `  ${actualZooms}` : ''}`
     context.font = '600 12px Menlo, Consolas, monospace'
     context.textAlign = 'left'
     context.textBaseline = 'top'
@@ -1208,7 +1230,10 @@ async function loadActiveLayer() {
   }
 }
 
-async function loadSvgTileLayer({ type, record }, order, z, projection) {
+async function loadSvgTileLayer({ type, record }, order, desiredZ, projection) {
+  const z = resolveTileZoom(record, desiredZ)
+  if (z == null) return null
+
   const visibleTiles = tilesForRecord(record, z)
     .filter((tile) => isUsableLayerStatus(tile.status ?? record.status))
     .filter((tile) => tileUrl(tile))
@@ -1223,6 +1248,7 @@ async function loadSvgTileLayer({ type, record }, order, z, projection) {
     type,
     record,
     z,
+    desiredZ,
     tiles: loadedTiles,
     isFill: isFillLayerRecord(type, record),
     order
@@ -1232,11 +1258,15 @@ async function loadSvgTileLayer({ type, record }, order, z, projection) {
 async function loadVisibleTileDelta() {
   const loadId = ++visibleTileLoadId
   const projection = buildProjection()
+  const desiredZ = loadedTileZoom ?? getTileZoom(zoomTransform.value.k)
   const additions = await Promise.all(activeSvgLayers.value.map(async (layer) => {
     if (!Array.isArray(layer.tiles) || !hasTiles(layer.record)) return null
 
+    const z = resolveTileZoom(layer.record, desiredZ)
+    if (z == null || z !== layer.z) return null
+
     const loadedPaths = new Set(layer.tiles.map((tile) => tile.path))
-    const missingVisibleTiles = tilesForRecord(layer.record, layer.z)
+    const missingVisibleTiles = tilesForRecord(layer.record, z)
       .filter((tile) => isUsableLayerStatus(tile.status ?? layer.record.status))
       .filter((tile) => tileUrl(tile) && !loadedPaths.has(tile.path))
       .filter((tile) => isTileVisible(tile, projection, canvasSize, zoomTransform.value))

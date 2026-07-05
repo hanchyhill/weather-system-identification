@@ -5,6 +5,10 @@ from __future__ import annotations
 from copy import deepcopy
 
 
+MULTI_Z_LAYER_TYPES = {"wind_barb", "wind_quiver", "surface_barb", "surface_quiver"}
+SINGLE_Z_FIGURE_SIZE = (20, 16)
+
+
 TILE_SCHEME = {
     "type": "quadtree",
     "projection": "PlateCarree",
@@ -144,7 +148,9 @@ LAYER_STYLES = {
 
 def style_for(layer_type: str, level: int | None, z: int) -> dict[str, object]:
     """Return rendering style for a layer at a pressure level and tile zoom."""
-    del level, z
+    del level
     style = deepcopy(DEFAULT_LAYER_STYLE)
     style.update(deepcopy(LAYER_STYLES.get(layer_type, {})))
+    if int(z) == 0 and layer_type not in MULTI_Z_LAYER_TYPES:
+        style["figure_size"] = SINGLE_Z_FIGURE_SIZE
     return style

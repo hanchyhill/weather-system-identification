@@ -36,7 +36,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from weather_common import DEFAULT_SOURCE, TIME_STR_LIST_ECMWFTHIN, calLatestBaseTime
-from draw.svg_layer_config import TILE_SCHEME, style_for
+from draw.svg_layer_config import MULTI_Z_LAYER_TYPES, TILE_SCHEME, style_for
 
 
 HIGH_LAYER_TYPES = (
@@ -323,6 +323,15 @@ def iter_tiles(bounds: Bounds, levels: Iterable[int]) -> list[Tile]:
                 if tile.bounds.intersects(bounds):
                     tiles.append(tile)
     return tiles
+
+
+def tile_levels_for_layer(layer_type: str, requested_levels: Iterable[int]) -> list[int]:
+    """Return tile zoom levels that should actually be generated for a layer."""
+    if layer_type not in MULTI_Z_LAYER_TYPES:
+        return [0]
+
+    requested = {int(level) for level in requested_levels}
+    return [level for level in TILE_SCHEME["levels"] if int(level) in requested]
 
 
 def generated_tile_count(bounds: Bounds, z: int) -> list[int]:
@@ -953,6 +962,7 @@ def product_tile_record(
         "projection": "PlateCarree",
         "status": status,
         "tiles": dict(sorted(tiles_by_z.items(), key=lambda item: int(item[0]))),
+        "available_tile_levels": sorted(int(z) for z in tiles_by_z),
     }
     if errors:
         record["error"] = "; ".join(errors[:3])
@@ -1033,11 +1043,13 @@ def load_manifest(output_root: Path, init_time: str, bounds: Bounds) -> dict[str
     assert isinstance(layer_types, dict)
     layer_types.setdefault("upper_air", list(HIGH_LAYER_TYPES))
     layer_types.setdefault("surface", list(SURFACE_LAYER_TYPES))
+    normalize_manifest_tile_levels(manifest)
     rebuild_manifest_indexes(manifest)
     return manifest
 
 
 def add_manifest_record(manifest: dict[str, object], record: dict[str, object]) -> None:
+    normalize_record_tile_levels(record)
     fc_hour = str(record["fc_hour"])
     level = str(record["level"])
     layer_type = str(record["layer_type"])
@@ -1068,6 +1080,37 @@ def manifest_has_record(
     if not isinstance(layers_by_level, dict):
         return False
     return layer_type in layers_by_level
+
+
+def normalize_record_tile_levels(record: dict[str, object]) -> None:
+    tiles = record.get("tiles")
+    if not isinstance(tiles, dict):
+        return
+
+    layer_type = str(record.get("layer_type", ""))
+    allowed_levels = {str(level) for level in tile_levels_for_layer(layer_type, TILE_SCHEME["levels"])}
+    record["tiles"] = {
+        str(z): tile_records
+        for z, tile_records in tiles.items()
+        if str(z) in allowed_levels and isinstance(tile_records, list)
+    }
+    record["available_tile_levels"] = sorted(int(z) for z in record["tiles"])
+
+
+def normalize_manifest_tile_levels(manifest: dict[str, object]) -> None:
+    products = manifest.get("products")
+    if not isinstance(products, dict):
+        return
+
+    for levels_by_hour in products.values():
+        if not isinstance(levels_by_hour, dict):
+            continue
+        for layers_by_level in levels_by_hour.values():
+            if not isinstance(layers_by_level, dict):
+                continue
+            for record in layers_by_level.values():
+                if isinstance(record, dict):
+                    normalize_record_tile_levels(record)
 
 
 def backfill_manifest_from_existing_svgs(
@@ -1115,6 +1158,9 @@ def backfill_manifest_from_existing_svgs(
             x = int(x_value)
             y = int(Path(filename).stem)
         except ValueError:
+            continue
+
+        if z not in tile_levels_for_layer(layer_type, TILE_SCHEME["levels"]):
             continue
 
         if manifest_has_record(manifest, fc_hour, level, layer_type):
@@ -1397,13 +1443,14 @@ def generate_upper_air_layers(
     rhum_candidates = [args.rhum_var.format(fc_hour=fc_hour), f"rhum{fc_hour}", "rhum", "r"]
 
     records: list[dict[str, object]] = []
-    tiles = iter_tiles(bounds, args.tile_levels)
     wind_fields = None
     preprocessed_cache: dict[tuple[object, ...], object] = {}
     for layer_type in HIGH_LAYER_TYPES:
         product_start = time.perf_counter()
         timings = {"data_load_s": 0.0, "preprocess_s": 0.0, "render_s": 0.0}
         tile_results: list[tuple[Tile, Path, str, str | None]] = []
+        layer_tile_levels = tile_levels_for_layer(layer_type, args.tile_levels)
+        tiles = iter_tiles(bounds, layer_tile_levels)
         output_paths = tile_output_paths(output_root, args.init_time, fc_hour, level, layer_type, tiles)
         if args.skip_existing and all_tiles_exist(output_paths):
             tile_results = tile_results_with_status(output_paths, "skipped")
@@ -1441,7 +1488,7 @@ def generate_upper_air_layers(
             fields = preprocess_upper_air_layer(
                 layer_type,
                 level,
-                layer_style(args, layer_type, level, min(args.tile_levels)),
+                layer_style(args, layer_type, level, min(layer_tile_levels)),
                 fields,
                 preprocessed_cache,
             )
@@ -1532,13 +1579,14 @@ def generate_surface_layers(
     mslp_candidates = [args.mslp_var.format(fc_hour=fc_hour), f"mslp{fc_hour}", "mslp", "msl"]
 
     records: list[dict[str, object]] = []
-    tiles = iter_tiles(bounds, args.tile_levels)
     wind_fields = None
     preprocessed_cache: dict[tuple[object, ...], object] = {}
     for layer_type in SURFACE_LAYER_TYPES:
         product_start = time.perf_counter()
         timings = {"data_load_s": 0.0, "preprocess_s": 0.0, "render_s": 0.0}
         tile_results: list[tuple[Tile, Path, str, str | None]] = []
+        layer_tile_levels = tile_levels_for_layer(layer_type, args.tile_levels)
+        tiles = iter_tiles(bounds, layer_tile_levels)
         output_paths = tile_output_paths(output_root, args.init_time, fc_hour, "surface", layer_type, tiles)
         if args.skip_existing and all_tiles_exist(output_paths):
             tile_results = tile_results_with_status(output_paths, "skipped")
@@ -1569,7 +1617,7 @@ def generate_surface_layers(
             preprocess_start = time.perf_counter()
             fields = preprocess_surface_layer(
                 layer_type,
-                layer_style(args, layer_type, None, min(args.tile_levels)),
+                layer_style(args, layer_type, None, min(layer_tile_levels)),
                 fields,
                 preprocessed_cache,
             )
