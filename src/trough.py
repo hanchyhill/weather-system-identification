@@ -23,6 +23,7 @@ from weather_common import (
     _to_data_array,
     _to_float,
     calLatestBaseTime,
+    default_output_root,
     form_lines,
     format_fc_hour,
     load_weather_data,
