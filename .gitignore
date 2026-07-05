@@ -138,3 +138,4 @@ demo/
 data/
 vite-dev*.log
 ifs/
+vis_web/src/source/110m_bou2_4l.json
