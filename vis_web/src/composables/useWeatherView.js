@@ -6,7 +6,7 @@ import { SvgImageCache } from '../utils/indexedDBCache'
 
 export function useWeatherView() {
 
-const DEFAULT_INIT_TIME = '2026070212'
+const DEFAULT_INIT_TIME = '2026070400'
 const DEFAULT_FC_HOURS = [
   '000', '003', '006', '009', '012', '015', '018', '021', '024',
   '027', '030', '033', '036', '039', '042', '045', '048', '051',
@@ -49,7 +49,7 @@ const layerType = ref('wind_speed_fill')
 const manifest = ref(null)
 const worldFeatures = ref(null)
 const activeSvgLayers = ref([])
-const selectedLayerTypes = ref(['wind_speed_fill', 'hght_contour', 'wind_barb'])
+const selectedLayerTypes = ref(['wind_speed_fill', 'wind_barb'])
 const layerCombinationName = ref('默认天气图')
 const activeLayerCombinationName = ref('默认天气图')
 const savedLayerCombinations = ref(loadSavedLayerCombinations())
@@ -59,7 +59,7 @@ const vortexCenters = ref([])
 const vortexTracks = ref(null)
 const showSvgLayer = ref(true)
 const showTrough = ref(true)
-const showJetAxes = ref(true)
+const showJetAxes = ref(false)
 const showRawPoints = ref(false)
 const showVortexCenters = ref(true)
 const showVortexTracks = ref(true)
@@ -69,7 +69,7 @@ const showTooltip = ref(true)
 const showTileDebug = ref(false)
 const activeSystemTab = ref('trough')
 const troughMinLength = ref(0)
-const troughMinWindSpeed = ref(0)
+const troughMinWindSpeed = ref(3.0)
 const troughLineWidth = ref(1.2)
 const troughShearFilters = reactive({
   shear_u_left: true,
@@ -77,8 +77,8 @@ const troughShearFilters = reactive({
   shear_v_up: true,
   shear_v_down: true
 })
-const jetMinAxisLength = ref(0)
-const jetMinAvgWindSpeed = ref(0)
+const jetMinAxisLength = ref(6.5)
+const jetMinAvgWindSpeed = ref(6)
 const jetMinMaxWindSpeed = ref(0)
 const jetLineWidth = ref(2.2)
 const showJetArrowHeads = ref(true)
