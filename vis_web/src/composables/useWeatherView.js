@@ -2,6 +2,8 @@ import * as d3 from 'd3'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { feature } from 'topojson-client'
 
+import worldTopo from '../source/110m.json'
+import chinaTopo from '../source/bou2_4l.topo.simplify.json'
 import { SvgImageCache } from '../utils/indexedDBCache'
 
 export function useWeatherView() {
@@ -27,7 +29,6 @@ const SHEAR_COLORS = reactive({
   shear_v_up: TROUGH_DEFAULT_COLOR,
   shear_v_down: TROUGH_DEFAULT_COLOR
 })
-const WORLD_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
 const LAYER_COMBINATION_STORAGE_KEY = 'weather-view-layer-combinations'
 const FILL_LAYER_TYPES = new Set(['wind_speed_fill', 'vort_fill', 'rhum_fill', 'surface_speed_fill'])
 const WIND_OVERLAY_LAYER_TYPES = new Set([
@@ -50,6 +51,7 @@ const level = ref('850')
 const layerType = ref('wind_speed_fill')
 const manifest = ref(null)
 const worldFeatures = ref(null)
+const chinaFeatures = ref(null)
 const activeSvgLayers = ref([])
 const selectedLayerTypes = ref(['wind_speed_fill', 'wind_barb'])
 const layerCombinationName = ref('默认天气图')
@@ -758,13 +760,21 @@ function trackColor(track) {
 }
 
 function drawBaseMap(context, path) {
-  if (!worldFeatures.value) return
+  if (worldFeatures.value) {
+    context.beginPath()
+    path(worldFeatures.value)
+    context.strokeStyle = 'rgba(48, 60, 76, 0.78)'
+    context.lineWidth = 1.2 / zoomTransform.value.k
+    context.stroke()
+  }
 
-  context.beginPath()
-  path(worldFeatures.value)
-  context.strokeStyle = 'rgba(48, 60, 76, 0.78)'
-  context.lineWidth = 2 / zoomTransform.value.k
-  context.stroke()
+  if (chinaFeatures.value) {
+    context.beginPath()
+    path(chinaFeatures.value)
+    context.strokeStyle = 'rgba(31, 41, 55, 0.9)'
+    context.lineWidth = 2 / zoomTransform.value.k
+    context.stroke()
+  }
 }
 
 function drawGraticule(context, projection) {
@@ -1190,11 +1200,11 @@ async function fetchJson(url) {
   return response.json()
 }
 
-async function loadWorld() {
+function loadWorld() {
   try {
     loadingState.map = '加载中'
-    const world = await fetchJson(WORLD_URL)
-    worldFeatures.value = feature(world, world.objects.countries)
+    worldFeatures.value = feature(worldTopo, worldTopo.objects.land)
+    chinaFeatures.value = feature(chinaTopo, chinaTopo.objects.bou2_4l)
     loadingState.map = '完成'
   } catch (error) {
     loadingState.map = `失败: ${error.message}`

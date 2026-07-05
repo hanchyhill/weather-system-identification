@@ -1281,8 +1281,10 @@ def maybe_log_tile_result(
 
 def layer_style(args, layer_type: str, level: int | None, z: int) -> dict[str, object]:
     style = style_for(layer_type, level, z)
-    style.setdefault("skip", args.skip)
-    style.setdefault("sigma", args.sigma)
+    if "skip" not in style:
+        style["skip"] = args.skip
+    if "sigma" not in style:
+        style["sigma"] = args.sigma
     return style
 
 

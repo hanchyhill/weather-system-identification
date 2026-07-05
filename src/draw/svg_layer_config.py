@@ -6,6 +6,11 @@ from copy import deepcopy
 
 
 MULTI_Z_LAYER_TYPES = {"wind_barb", "wind_quiver", "surface_barb", "surface_quiver"}
+VECTOR_SKIP_BY_Z = {
+    0: 8,
+    1: 5,
+    2: 3,
+}
 SINGLE_Z_FIGURE_SIZE = (20, 16)
 
 
@@ -70,21 +75,21 @@ LAYER_STYLES = {
         ],
     },
     "wind_quiver": {
-        "skip": 8,
+        "skip_by_z": VECTOR_SKIP_BY_Z,
         "sigma": 2.0,
         "scale": 320,
         "width": 0.0024,
         "color": "#111827",
     },
     "surface_quiver": {
-        "skip": 8,
+        "skip_by_z": VECTOR_SKIP_BY_Z,
         "sigma": 2.0,
         "scale": 320,
         "width": 0.0024,
         "color": "#111827",
     },
     "wind_barb": {
-        "skip": 8,
+        "skip_by_z": VECTOR_SKIP_BY_Z,
         "sigma": 2.0,
         "length": 6,
         "linewidth": 0.45,
@@ -93,7 +98,7 @@ LAYER_STYLES = {
         "sizes": {"emptybarb": 0},
     },
     "surface_barb": {
-        "skip": 8,
+        "skip_by_z": VECTOR_SKIP_BY_Z,
         "sigma": 2.0,
         "length": 6,
         "linewidth": 0.45,
@@ -151,6 +156,9 @@ def style_for(layer_type: str, level: int | None, z: int) -> dict[str, object]:
     del level
     style = deepcopy(DEFAULT_LAYER_STYLE)
     style.update(deepcopy(LAYER_STYLES.get(layer_type, {})))
+    skip_by_z = style.pop("skip_by_z", None)
+    if skip_by_z is not None:
+        style["skip"] = skip_by_z.get(int(z), style["skip"])
     if int(z) == 0 and layer_type not in MULTI_Z_LAYER_TYPES:
         style["figure_size"] = SINGLE_Z_FIGURE_SIZE
     return style
