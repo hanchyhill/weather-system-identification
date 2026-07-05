@@ -111,6 +111,7 @@ const vortexMinWindSpeed = ref(0)
 const vortexMinVorticity = ref(0.00006)
 const vortexTrackMinWindSpeed = ref(0)
 const showFutureVortexTracks = ref(true)
+const showOnlyFutureVortexTracks = ref(false)
 const loadingState = reactive({
   manifest: '未加载',
   svg: '未加载',
@@ -963,8 +964,12 @@ function drawVortexTracks(context, projection) {
     if (points.length < 2) return
 
     const currentStep = Number(fcHour.value)
-    const pastPoints = points.filter((point) => Number(point.step ?? point.fc_hour) <= currentStep)
-    const futurePoints = showFutureVortexTracks.value
+    const onlyFuture = showOnlyFutureVortexTracks.value
+    const showFuture = onlyFuture || showFutureVortexTracks.value
+    const pastPoints = onlyFuture
+      ? []
+      : points.filter((point) => Number(point.step ?? point.fc_hour) <= currentStep)
+    const futurePoints = showFuture
       ? points.filter((point) => Number(point.step ?? point.fc_hour) >= currentStep)
       : []
     const color = trackColor(track)
@@ -1549,6 +1554,7 @@ const context = {
   showVortexTracks,
   showWarmOnlyCenters,
   showWarmOnlyTracks,
+  showOnlyFutureVortexTracks,
   sliderIndexCount,
   sliderOpts,
   markSlider,
@@ -1606,7 +1612,8 @@ watch([
   vortexMinWindSpeed,
   vortexMinVorticity,
   vortexTrackMinWindSpeed,
-  showFutureVortexTracks
+  showFutureVortexTracks,
+  showOnlyFutureVortexTracks
 ], () => {
   clearHoverState()
   requestDraw()

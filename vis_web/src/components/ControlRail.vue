@@ -58,6 +58,7 @@ const {
   showVortexTracks,
   showWarmOnlyCenters,
   showWarmOnlyTracks,
+  showOnlyFutureVortexTracks,
   systemTabs,
   troughLineWidth,
   troughMinLength,
@@ -256,6 +257,10 @@ const {
         <div class="option-row">
           <span>未来轨迹</span>
           <n-switch v-model:value="showFutureVortexTracks" size="small" :disabled="!isVortexTrackLevel" />
+        </div>
+        <div class="option-row">
+          <span>仅未来轨迹</span>
+          <n-switch v-model:value="showOnlyFutureVortexTracks" size="small" :disabled="!isVortexTrackLevel" />
         </div>
         <div class="option-list">
           <label>
