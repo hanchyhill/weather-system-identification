@@ -41,6 +41,7 @@ const {
   loadingState,
   projectionName,
   projectionOptions,
+  refreshToLatest,
   saveLayerCombination,
   savedLayerCombinations,
   shiftInitTime,
@@ -105,11 +106,11 @@ const {
         </n-tooltip>
         <n-tooltip trigger="hover">
           <template #trigger>
-            <n-button size="small" secondary circle @click="loadManifest">
+            <n-button size="small" secondary circle @click="refreshToLatest">
               <RefreshCw :size="16" />
             </n-button>
           </template>
-          重新加载 manifest 与槽线
+          对齐到最新起报时次并重新加载
         </n-tooltip>
       </div>
     </section>

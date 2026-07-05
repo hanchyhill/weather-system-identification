@@ -8,7 +8,32 @@ import { SvgImageCache } from '../utils/indexedDBCache'
 
 export function useWeatherView() {
 
-const DEFAULT_INIT_TIME = '2026070400'
+// 计算最新起报时次，逻辑与后端 src/weather_common.py 的 calLatestBaseTime 保持一致：
+//   UTC 07-19 时 -> 当日 00 时；19 时以后 -> 当日 12 时；07 时以前 -> 前一日 12 时。
+// 考虑到后端绘图约滞后一小时才能完整绘制完所有图像，前端起报时次整体后移一小时计算，
+// 即用 (当前 UTC 时间 - 1 小时) 代入上述判断，使前端切换时次相应延后一小时。
+function calLatestBaseTime() {
+  const now = new Date(Date.now() - 60 * 60 * 1000)
+  const hour = now.getUTCHours()
+
+  let base
+  if (hour >= 7 && hour < 19) {
+    base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0))
+  } else if (hour >= 19) {
+    base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 12))
+  } else {
+    const prev = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+    base = new Date(Date.UTC(prev.getUTCFullYear(), prev.getUTCMonth(), prev.getUTCDate(), 12))
+  }
+
+  const year = base.getUTCFullYear()
+  const month = padTimePart(base.getUTCMonth() + 1)
+  const day = padTimePart(base.getUTCDate())
+  const baseHour = padTimePart(base.getUTCHours())
+  return `${year}${month}${day}${baseHour}`
+}
+
+const DEFAULT_INIT_TIME = calLatestBaseTime()
 const DEFAULT_FC_HOURS = [
   '000', '003', '006', '009', '012', '015', '018', '021', '024',
   '027', '030', '033', '036', '039', '042', '045', '048', '051',
@@ -360,6 +385,12 @@ function shiftInitTime(deltaHours) {
   const day = padTimePart(next.getUTCDate())
   const hour = padTimePart(next.getUTCHours())
   initTime.value = `${year}${month}${day}${hour}`
+  loadManifest()
+}
+
+// 点击“刷新”时重新对齐到最新起报时次（含后端绘图滞后一小时的补偿），再重新加载。
+function refreshToLatest() {
+  initTime.value = calLatestBaseTime()
   loadManifest()
 }
 
@@ -1557,6 +1588,7 @@ const context = {
   mouseGeo,
   projectionName,
   projectionOptions,
+  refreshToLatest,
   resetView,
   saveLayerCombination,
   savedLayerCombinations,

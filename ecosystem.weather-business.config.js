@@ -10,7 +10,13 @@ const xdgRuntimeDir = path.join(cacheBase, 'xdg-runtime');
 const uvCacheDir = path.join(cacheBase, 'uv-cache');
 const outputRoot = process.env.WEATHER_OUTPUT_ROOT || '/data/weather_vis';
 const productsRoot = process.env.WEATHER_PRODUCTS_ROOT || path.join(outputRoot, 'products');
-const troughIntervalSeconds = process.env.TROUGH_INTERVAL_SECONDS || '1800';
+const home = process.env.HOME || '';
+const pathPrefix = home ? `${home}/.local/bin:` : '';
+const bashPath = pathPrefix ? `export PATH="${pathPrefix}$PATH"; ` : '';
+
+function uvPythonCommand(scriptArgs) {
+  return `${bashPath}cd "${projectRoot}" && exec uv run python ${scriptArgs}`;
+}
 
 fs.mkdirSync(logDir, { recursive: true });
 fs.mkdirSync(xdgRuntimeDir, { recursive: true, mode: 0o700 });
@@ -24,15 +30,19 @@ const commonEnv = {
   UV_CACHE_DIR: uvCacheDir,
   WEATHER_OUTPUT_ROOT: outputRoot,
   WEATHER_PRODUCTS_ROOT: productsRoot,
-  TROUGH_INTERVAL_SECONDS: troughIntervalSeconds,
 };
 
 module.exports = {
   apps: [
     {
       name: 'weather-draw-schedule',
-      script: 'uv',
-      args: `run python src/draw_schedule.py --run-immediately --output ${productsRoot}`,
+      script: 'bash',
+      args: [
+        '-lc',
+        uvPythonCommand(
+          `src/draw_schedule.py --run-immediately --output "${productsRoot}"`,
+        ),
+      ],
       cwd: projectRoot,
       interpreter: 'none',
       instances: 1,
@@ -50,15 +60,7 @@ module.exports = {
       script: 'bash',
       args: [
         '-lc',
-        [
-          'while true; do',
-          '  echo "[$(date \'+%F %T\')] Start src/trough.py";',
-          '  uv run python src/trough.py --output-root "${WEATHER_OUTPUT_ROOT:-' + outputRoot + '}";',
-          '  status=$?;',
-          '  echo "[$(date \'+%F %T\')] Finished src/trough.py status=${status}; sleep ${TROUGH_INTERVAL_SECONDS:-1800}s";',
-          '  sleep "${TROUGH_INTERVAL_SECONDS:-1800}";',
-          'done',
-        ].join(' '),
+        uvPythonCommand(`src/schedule.py --output-root "${outputRoot}"`),
       ],
       cwd: projectRoot,
       interpreter: 'none',

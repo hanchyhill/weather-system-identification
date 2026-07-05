@@ -8,7 +8,6 @@ WEB_CONFIG="${WEB_ROOT}/ecosystem.config.cjs"
 
 export WEATHER_OUTPUT_ROOT="${WEATHER_OUTPUT_ROOT:-/data/weather_vis}"
 export WEATHER_PRODUCTS_ROOT="${WEATHER_PRODUCTS_ROOT:-${WEATHER_OUTPUT_ROOT}/products}"
-export TROUGH_INTERVAL_SECONDS="${TROUGH_INTERVAL_SECONDS:-1800}"
 
 ensure_uv() {
   if command -v uv >/dev/null 2>&1; then
@@ -42,6 +41,8 @@ ensure_node_tools() {
 mkdir -p "${WEATHER_OUTPUT_ROOT}" "${WEATHER_PRODUCTS_ROOT}" "${PROJECT_ROOT}/logs"
 
 ensure_uv
+export PATH="${HOME}/.local/bin:${PATH}"
+
 ensure_node_tools
 
 cd "${PROJECT_ROOT}"
@@ -52,6 +53,8 @@ pnpm install --frozen-lockfile
 pnpm build
 
 cd "${PROJECT_ROOT}"
+pm2 delete weather-draw-schedule 2>/dev/null || true
+pm2 delete weather-trough 2>/dev/null || true
 pm2 startOrReload "${PY_CONFIG}" --update-env
 pm2 startOrReload "${WEB_CONFIG}" --update-env
 pm2 save
