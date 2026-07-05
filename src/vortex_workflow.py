@@ -16,6 +16,7 @@ from vortex_common import (
     VortexDataError,
     calLatestBaseTime,
     center_json_path,
+    default_output_root,
     normalize_fc_hours,
     track_json_path,
     warm_json_path,
@@ -74,7 +75,7 @@ def run_vortex_workflow(
     levels: Iterable[int] | None = None,
     area: list[float] | None = None,
     source: str = DEFAULT_SOURCE,
-    output_root: str | Path = "data",
+    output_root: str | Path | None = None,
     warm_levels: Iterable[int] = DEFAULT_WARM_LEVELS,
     save_center_image: bool = False,
     save_track_image: bool = False,
@@ -87,7 +88,7 @@ def run_vortex_workflow(
     fc_hours = normalize_fc_hours(fc_hours or DEFAULT_FC_HOURS)
     levels = [int(level) for level in (levels or DEFAULT_LEVELS)]
     area = [float(value) for value in (area or DEFAULT_AREA)]
-    output_root = Path(output_root)
+    output_root = Path(output_root if output_root is not None else default_output_root())
 
     if show_progress:
         print(
@@ -212,7 +213,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--levels", nargs="+", type=int, default=DEFAULT_LEVELS)
     parser.add_argument("--area", nargs=4, type=float, default=DEFAULT_AREA, metavar=("W", "E", "S", "N"))
     parser.add_argument("--source", default=DEFAULT_SOURCE)
-    parser.add_argument("--output-root", default="data")
+    parser.add_argument("--output-root", default=default_output_root())
     parser.add_argument("--warm-levels", nargs="+", type=int, default=DEFAULT_WARM_LEVELS)
     parser.add_argument("--smooth-threshold", type=float, default=1.0)
     parser.add_argument("--save-center-image", action="store_true")

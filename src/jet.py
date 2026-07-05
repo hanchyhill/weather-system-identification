@@ -23,6 +23,7 @@ from weather_common import (
     _to_data_array,
     _to_float,
     calLatestBaseTime,
+    default_output_root,
     form_lines,
     format_fc_hour,
     load_weather_data,
@@ -397,7 +398,7 @@ def _read_existing_jet_line_count(json_path):
 
 def get_multi_fc_jet_by_init_time(init_time=None, fc_hours=TIME_STR_LIST_ECMWFTHIN,
                                   target_levs=TARGET_LEV_LIST,
-                                  output_root='./data',
+                                  output_root=default_output_root(),
                                   source=DEFAULT_SOURCE,
                                   config=JET_CONFIG,
                                   save_image=True,
@@ -542,7 +543,7 @@ def get_multi_fc_jet_by_init_time(init_time=None, fc_hours=TIME_STR_LIST_ECMWFTH
 
 def update_latest_jet_outputs(fc_hours=TIME_STR_LIST_ECMWFTHIN,
                               target_levs=TARGET_LEV_LIST,
-                              output_root='./data',
+                              output_root=default_output_root(),
                               source=DEFAULT_SOURCE,
                               save_image=True,
                               save_json=True,
@@ -565,7 +566,7 @@ def update_latest_jet_outputs(fc_hours=TIME_STR_LIST_ECMWFTHIN,
 
 
 def main(init_time=None, fc_hours=TIME_STR_LIST_ECMWFTHIN,
-         target_levs=TARGET_LEV_LIST, output_root='./data',
+         target_levs=TARGET_LEV_LIST, output_root=default_output_root(),
          source=DEFAULT_SOURCE, save_image=True, save_json=True,
          show_progress=True, stop_on_error=False):
     """Batch-generate jet-axis outputs."""
@@ -591,7 +592,7 @@ def parse_args():
     )
     parser.add_argument('--fc-hours', nargs='+', default=TIME_STR_LIST_ECMWFTHIN)
     parser.add_argument('--target-levs', nargs='+', type=int, default=TARGET_LEV_LIST)
-    parser.add_argument('--output-root', default='./data')
+    parser.add_argument('--output-root', default=default_output_root())
     parser.add_argument('--source', default=DEFAULT_SOURCE)
     parser.add_argument('--save-image', dest='save_image', action='store_true', default=True)
     parser.add_argument('--no-save-image', dest='save_image', action='store_false')

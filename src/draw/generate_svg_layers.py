@@ -35,8 +35,11 @@ SRC_ROOT = Path(__file__).resolve().parents[1]
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from weather_common import DEFAULT_SOURCE, TIME_STR_LIST_ECMWFTHIN, calLatestBaseTime
+from weather_common import DEFAULT_SOURCE, TIME_STR_LIST_ECMWFTHIN, calLatestBaseTime, default_output_root
 from draw.svg_layer_config import MULTI_Z_LAYER_TYPES, TILE_SCHEME, style_for
+
+
+DEFAULT_OUTPUT_ROOT = f"{default_output_root()}/products"
 
 
 HIGH_LAYER_TYPES = (
@@ -1830,7 +1833,7 @@ def parse_args() -> argparse.Namespace:
         help="Forecast hours. Defaults to all ECMWFThin forecast hours.",
     )
     parser.add_argument("--levels", nargs="+", type=int, default=list(DEFAULT_LEVELS), help="Pressure levels in hPa.")
-    parser.add_argument("--output", default="data/products", help="Output root directory.")
+    parser.add_argument("--output", default=DEFAULT_OUTPUT_ROOT, help="Output root directory.")
     parser.add_argument("--bounds", nargs=4, type=float, default=list(DEFAULT_BOUNDS), metavar=("LON_MIN", "LON_MAX", "LAT_MIN", "LAT_MAX"))
     parser.add_argument("--source", default=DEFAULT_SOURCE, help="THREDDS source name.")
     parser.add_argument("--base-url-template", default=DEFAULT_BASE_URL_TEMPLATE)

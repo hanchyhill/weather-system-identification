@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import platform
 from pathlib import Path
 
 import arrow
@@ -24,6 +25,17 @@ TIME_STR_LIST_ECMWFTHIN = [
     '198', '204', '210', '216', '222', '228', '234', '240',
 ]
 TARGET_LEV_LIST = [200, 500, 850, 925, 950]
+
+
+def default_output_root() -> str:
+    """根据操作系统返回默认数据输出根目录。
+
+    - 本地开发（Windows）：写入项目下的相对目录 ``./data``。
+    - 生产环境（Linux 服务器）：写入挂载的 ``/data`` 目录。
+    """
+    if platform.system() == 'Windows':
+        return './data'
+    return '/data'
 
 
 class WeatherDataError(Exception):

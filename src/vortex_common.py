@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import platform
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -46,6 +47,17 @@ class VortexDataNotReadyError(VortexDataError):
 
 class VortexPreflightError(VortexDataError):
     """Raised when required center or warm-core files are not ready."""
+
+
+def default_output_root() -> str:
+    """根据操作系统返回默认数据输出根目录。
+
+    - 本地开发（Windows）：写入项目下的相对目录 ``./data``。
+    - 生产环境（Linux 服务器）：写入挂载的 ``/data`` 目录。
+    """
+    if platform.system() == "Windows":
+        return "./data"
+    return "/data"
 
 
 def calLatestBaseTime() -> str:

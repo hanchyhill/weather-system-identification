@@ -12,7 +12,7 @@ from typing import Any
 from jet import main as run_jet
 from trough import main as run_trough
 from vortex_workflow import run_vortex_workflow
-from weather_common import calLatestBaseTime
+from weather_common import calLatestBaseTime, default_output_root
 
 
 SCHEDULE_MINUTES = (16, 46)
@@ -59,13 +59,15 @@ def _run_job(name: str, func: Callable[..., Any], **kwargs: Any) -> bool:
 
 def run_cycle(
     *,
-    output_root: str = "./data",
+    output_root: str | None = None,
     source: str = "ecmwfthin",
     save_image: bool = True,
     save_json: bool = True,
     show_progress: bool = True,
 ) -> dict[str, bool]:
     """Run jet, trough, and vortex workflows for the latest base time."""
+    if output_root is None:
+        output_root = default_output_root()
     init_time = calLatestBaseTime()
     _log(f"Start scheduled cycle: init_time={init_time}")
 
@@ -107,13 +109,15 @@ def run_cycle(
 
 def run_scheduler(
     *,
-    output_root: str = "./data",
+    output_root: str | None = None,
     source: str = "ecmwfthin",
     save_image: bool = True,
     save_json: bool = True,
     show_progress: bool = True,
 ) -> None:
     """Run once immediately, then every hour at :16 and :46."""
+    if output_root is None:
+        output_root = default_output_root()
     run_cycle(
         output_root=output_root,
         source=source,
@@ -140,7 +144,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run weather-system workflows immediately, then at every hour's :16 and :46."
     )
-    parser.add_argument("--output-root", default="./data")
+    parser.add_argument("--output-root", default=default_output_root())
     parser.add_argument("--source", default="ecmwfthin")
     parser.add_argument("--save-image", dest="save_image", action="store_true", default=True)
     parser.add_argument("--no-save-image", dest="save_image", action="store_false")
