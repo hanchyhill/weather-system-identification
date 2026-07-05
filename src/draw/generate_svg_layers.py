@@ -35,6 +35,7 @@ SRC_ROOT = Path(__file__).resolve().parents[1]
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from vortex_common import ABNORMAL_DATA_THRESHOLD, VortexDataNotReadyError
 from weather_common import DEFAULT_SOURCE, TIME_STR_LIST_ECMWFTHIN, calLatestBaseTime, default_output_root
 from draw.svg_layer_config import MULTI_Z_LAYER_TYPES, TILE_SCHEME, style_for
 
@@ -485,6 +486,7 @@ def open_data_array(
             data = select_data_array(dataset, variable_candidates, init_time, level, bounds)
         except ValueError as exc:
             raise ValueError(f"{exc} from {path_or_url}") from exc
+        validate_data_values({data.name or "field": data})
         if cache is None:
             data = data.load()
         return data
@@ -507,6 +509,24 @@ def default_path(
 
 def wind_speed(u: xr.DataArray, v: xr.DataArray) -> xr.DataArray:
     return np.sqrt(u**2 + v**2)
+
+
+def validate_data_values(
+    fields: dict[str, xr.DataArray],
+    threshold: float = ABNORMAL_DATA_THRESHOLD,
+) -> None:
+    abnormal_items = []
+    for name, data in fields.items():
+        values = np.asarray(data.values)
+        if values.size and not np.all(np.isnan(values)):
+            min_value = float(np.nanmin(values))
+            if np.isfinite(min_value) and min_value < threshold:
+                abnormal_items.append(f"{name} min={min_value}")
+    if abnormal_items:
+        raise VortexDataNotReadyError(
+            "Abnormal weather data detected; data may not be updated yet: "
+            + ", ".join(abnormal_items)
+        )
 
 
 def finite_values(data: xr.DataArray | np.ndarray, field_name: str) -> np.ndarray:

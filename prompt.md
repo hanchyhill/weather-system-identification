@@ -521,6 +521,13 @@ z=2：4×4，单瓦片 22.5°×15°
 2. 当前svg加载完毕后，启动预加载，先预加载下一个预报时效的svg图像，然后预加载上一个预报时效的svg图像,最后预加载下下个预报时效的svg图像，一共预加载3个预报时效。预加载之前，先判断indexedDB当中是否已经存在该瓦片，如果存在，则不预加载。
 3. 修改indexedDB数据expires字段，设置为72小时。
 
+## 填色图模糊问题
+
+
+## 修改等值线图的线宽，在不同缩放倍数下，保持渲染出来的线宽相同。
+
+## 绘图的风速异常问题，@src/draw/generate_svg_layers.py 当中，部分时效会把异常风速绘制出来，参照 @H:\github\weather-system-identification\src\vortex_common.py 对异常数据的检验。
+
 ## TODO
 
 1. 涡旋中心算法实装[success]。
