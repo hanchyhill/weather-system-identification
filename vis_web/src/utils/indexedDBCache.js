@@ -1,7 +1,8 @@
 const DB_NAME = 'WeatherSystemVisualization'
 const DB_VERSION = 1
 const STORE_NAME = 'svg_images'
-const EXPIRY_MS = 3 * 24 * 60 * 60 * 1000
+// 缓存有效期 72 小时（3 天）
+const EXPIRY_MS = 72 * 60 * 60 * 1000
 
 let dbPromise = null
 
@@ -112,6 +113,24 @@ export class SvgImageCache {
         this.stats.misses += 1
         resolve(null)
       }
+    })
+  }
+
+  // 仅判断缓存中是否已存在未过期的条目，不解码图像；用于预加载前的去重检查。
+  async has(key) {
+    if (this.memory.has(key)) return true
+
+    const db = await openDatabase()
+    if (!db) return false
+
+    return new Promise((resolve) => {
+      const transaction = db.transaction(STORE_NAME, 'readonly')
+      const request = transaction.objectStore(STORE_NAME).get(key)
+      request.onsuccess = () => {
+        const item = request.result
+        resolve(Boolean(item && item.expiry > Date.now()))
+      }
+      request.onerror = () => resolve(false)
     })
   }
 

@@ -149,6 +149,7 @@ const loadingState = reactive({
   map: '未加载'
 })
 const errorMessage = ref('')
+const preloading = ref(false)
 const mouseGeo = ref(null)
 const hoverLine = ref(null)
 const hoverJetLine = ref(null)
@@ -162,6 +163,8 @@ let drawQueued = false
 let activeLayerLoadId = 0
 let visibleTileLoadId = 0
 let loadedTileZoom = null
+let preloadRunId = 0
+let preloadTimer = null
 
 const projectionOptions = [
   { label: '等经纬度', value: 'equirectangular' },
@@ -1311,6 +1314,7 @@ async function loadActiveLayer() {
     loadingState.svg = missingCount
       ? `${activeSvgLayers.value.length}层完成 / ${missingCount}层缺失`
       : `${activeSvgLayers.value.length}层完成`
+    schedulePreload()
   } finally {
     requestDraw()
   }
@@ -1417,6 +1421,93 @@ async function loadSvgImage(url) {
   } catch {
     return null
   }
+}
+
+// 预加载相邻预报时效的瓦片：切换预报时效是最常见的操作，提前把邻近时效的瓦片写入
+// IndexedDB 可显著加快切换速度。按优先级顺序预加载：
+//   n+1, n-1, n+2, n-2, n+3, n-3, n+4, n-4, n+5, n-5, n+6, n-6, n+7，共 13 个时效。
+const PRELOAD_FC_HOUR_OFFSETS = [1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7]
+
+function neighborPreloadFcHours() {
+  const hours = sliderFcHours.value
+  const index = fcHourIndex.value
+  const result = []
+  for (const offset of PRELOAD_FC_HOUR_OFFSETS) {
+    const targetIndex = index + offset
+    if (targetIndex < 0 || targetIndex >= hours.length) continue
+    const targetFcHour = hours[targetIndex]
+    if (targetFcHour && targetFcHour !== fcHour.value && !result.includes(targetFcHour)) {
+      result.push(targetFcHour)
+    }
+  }
+  return result
+}
+
+// 依据当前视窗（要素/层次/z 等级/边界）计算指定预报时效需要加载的瓦片 URL 列表。
+function collectPreloadUrls(targetFcHour) {
+  if (!manifest.value) return []
+  const projection = buildProjection()
+  const desiredZ = loadedTileZoom ?? getTileZoom(zoomTransform.value.k)
+  const urls = []
+
+  for (const type of selectedLayerTypes.value) {
+    const record = manifest.value?.products?.[targetFcHour]?.[level.value]?.[type]
+    if (!layerHasLoadable(record)) continue
+
+    if (hasTiles(record)) {
+      const z = resolveTileZoom(record, desiredZ)
+      if (z == null) continue
+      const tiles = tilesForRecord(record, z)
+        .filter((tile) => isUsableLayerStatus(tile.status ?? record.status))
+        .filter((tile) => tileUrl(tile))
+        .filter((tile) => isTileVisible(tile, projection, canvasSize, zoomTransform.value))
+      for (const tile of tiles) urls.push(tileUrl(tile))
+    } else {
+      const url = layerUrl(record)
+      if (url) urls.push(url)
+    }
+  }
+
+  return urls
+}
+
+// 逐个预报时效、逐张瓦片地预加载；预加载前先判断 IndexedDB 是否已存在，存在则跳过。
+async function preloadNeighborForecasts() {
+  if (!manifest.value) return
+  const runId = ++preloadRunId
+  const targets = neighborPreloadFcHours()
+  if (!targets.length) return
+
+  preloading.value = true
+  try {
+    for (const targetFcHour of targets) {
+      if (runId !== preloadRunId) return
+      const urls = collectPreloadUrls(targetFcHour)
+      for (const url of urls) {
+        if (runId !== preloadRunId) return
+        // eslint-disable-next-line no-await-in-loop
+        if (await cache.has(url)) continue
+        // eslint-disable-next-line no-await-in-loop
+        await loadSvgImage(url)
+      }
+    }
+  } finally {
+    // 仅当自己仍是最新的预加载任务时才关闭标识，避免被后启动的任务提前清除。
+    if (runId === preloadRunId) preloading.value = false
+  }
+}
+
+// 在当前时效瓦片加载完毕后调度预加载；用延时+运行号确保不阻塞渲染且旧任务可被取消。
+function schedulePreload() {
+  if (preloadTimer) {
+    clearTimeout(preloadTimer)
+    preloadTimer = null
+  }
+  preloadRunId += 1
+  preloadTimer = setTimeout(() => {
+    preloadTimer = null
+    preloadNeighborForecasts()
+  }, 400)
 }
 
 async function loadTrough() {
@@ -1628,7 +1719,8 @@ const context = {
   vortexMinWindSpeed,
   vortexTrackMinWindSpeed,
   zoomTransform,
-  errorMessage
+  errorMessage,
+  preloading
 }
 
 watch([fcHour, level], async () => {
@@ -1706,6 +1798,11 @@ onMounted(async () => {
 
 onUnmounted(() => {
   resizeObserver?.disconnect()
+  if (preloadTimer) {
+    clearTimeout(preloadTimer)
+    preloadTimer = null
+  }
+  preloadRunId += 1
   if (canvasRef.value) d3.select(canvasRef.value).on('.zoom', null)
 })
 

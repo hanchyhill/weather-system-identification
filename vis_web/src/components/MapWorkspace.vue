@@ -28,6 +28,7 @@ const {
   level,
   markSlider,
   mouseGeo,
+  preloading,
   resetView,
   scrollForecastSlider,
   shellRef,
@@ -104,6 +105,11 @@ const {
         {{ formatNumber(mouseGeo.lon, 3) }}E,
         {{ formatNumber(mouseGeo.lat, 3) }}N
         <span>k={{ formatNumber(zoomTransform.k, 2) }}</span>
+      </div>
+
+      <div v-if="preloading" class="preload-indicator">
+        <span class="preload-spinner" />
+        <span>预加载中…</span>
       </div>
 
       <div v-if="hoverVortexCenter" class="line-tooltip">
