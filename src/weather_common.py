@@ -35,7 +35,7 @@ def default_output_root() -> str:
     """
     if platform.system() == 'Windows':
         return './data'
-    return '/data'
+    return '/data/weather_vis'
 
 
 class WeatherDataError(Exception):
