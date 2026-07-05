@@ -71,6 +71,18 @@ input {
   align-items: center;
 }
 
+.init-time-control {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.init-time-control .n-input {
+  flex: 0 1 130px;
+  min-width: 0;
+}
+
 .layer-combo-row {
   align-items: stretch;
 }

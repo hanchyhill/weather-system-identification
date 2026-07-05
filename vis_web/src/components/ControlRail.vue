@@ -1,5 +1,5 @@
 <script setup>
-import { RefreshCw, Save, Settings, Trash2 } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, RefreshCw, Save, Settings, Trash2 } from 'lucide-vue-next'
 import {
   NButton,
   NCheckbox,
@@ -43,6 +43,7 @@ const {
   projectionOptions,
   saveLayerCombination,
   savedLayerCombinations,
+  shiftInitTime,
   selectedLayerLabels,
   selectedLayerTypes,
   SHEAR_COLORS,
@@ -84,8 +85,24 @@ const {
 
     <section class="control-section">
       <label>起报时次</label>
-      <div class="inline-control">
+      <div class="init-time-control">
         <n-input v-model:value="initTime" size="small" />
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button size="small" secondary circle @click="shiftInitTime(-12)">
+              <ChevronLeft :size="16" />
+            </n-button>
+          </template>
+          上一个起报时次（-12h）
+        </n-tooltip>
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button size="small" secondary circle @click="shiftInitTime(12)">
+              <ChevronRight :size="16" />
+            </n-button>
+          </template>
+          下一个起报时次（+12h）
+        </n-tooltip>
         <n-tooltip trigger="hover">
           <template #trigger>
             <n-button size="small" secondary circle @click="loadManifest">

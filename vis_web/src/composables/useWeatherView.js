@@ -348,6 +348,19 @@ function padTimePart(value) {
   return String(value).padStart(2, '0')
 }
 
+function shiftInitTime(deltaHours) {
+  const date = parseInitTime(initTime.value)
+  if (!date) return
+
+  const next = new Date(date.getTime() + deltaHours * 60 * 60 * 1000)
+  const year = next.getUTCFullYear()
+  const month = padTimePart(next.getUTCMonth() + 1)
+  const day = padTimePart(next.getUTCDate())
+  const hour = padTimePart(next.getUTCHours())
+  initTime.value = `${year}${month}${day}${hour}`
+  loadManifest()
+}
+
 function formatForecastValidTime(index, includeMonth = true) {
   const date = forecastValidDate(index)
   if (!date) {
@@ -1538,6 +1551,7 @@ const context = {
   saveLayerCombination,
   savedLayerCombinations,
   scrollForecastSlider,
+  shiftInitTime,
   selectedLayerLabels,
   selectedLayerTypes,
   SHEAR_COLORS,
