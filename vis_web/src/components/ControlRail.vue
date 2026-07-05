@@ -37,7 +37,6 @@ const {
   layerType,
   level,
   levelOptions,
-  loadManifest,
   loadingState,
   projectionName,
   projectionOptions,
