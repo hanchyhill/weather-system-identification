@@ -65,6 +65,29 @@ const WIND_OVERLAY_LAYER_TYPES = new Set([
   'surface_streamline'
 ])
 
+// 等值线图层是预渲染的 SVG 图像，绘制时整体乘以 zoomTransform.k，
+// 因此放大系数越小、线条被压缩得越细。为保证不同放大系数下等值线的视觉线宽一致，
+// 当 k 小于参考放大系数时，通过多方向偏移重绘（形态学膨胀）补偿线宽。
+const CONTOUR_REFERENCE_ZOOM = 6
+// 在最小放大系数处额外补偿的“半线宽”（屏幕像素），随 k 接近参考值线性衰减到 0。
+const CONTOUR_MAX_DILATION_PX = 1.1
+// 八方向单位偏移（对角线归一化到单位圆），配合膨胀半径生成更粗的线条。
+const CONTOUR_DILATION_OFFSETS = [
+  [1, 0], [-1, 0], [0, 1], [0, -1],
+  [0.7071, 0.7071], [0.7071, -0.7071], [-0.7071, 0.7071], [-0.7071, -0.7071]
+]
+
+// SVG 图层按其固有像素尺寸栅格化后再随 zoomTransform.k 放大绘制，放大系数越大越模糊。
+// 为在高放大系数下保持清晰，按放大系数动态提高栅格化“采样倍率”（超采样），
+// 即用更大的宽高重新栅格化同一份矢量 SVG。倍率按区间取整以避免频繁重载。
+// 采样倍率封顶 2 倍：3 倍会让位图像素数达 9 倍，高放大系数下重栅格化/绘制明显卡顿；
+// 2 倍在清晰度与性能之间更平衡，并把提升阈值适当抬高，减少高倍率下的重载与内存占用。
+const RENDER_SCALE_MAX = 2
+function renderScaleForZoom(k) {
+  if (!(k > 8)) return 1
+  return RENDER_SCALE_MAX
+}
+
 const canvasRef = ref(null)
 const shellRef = ref(null)
 const canvasSize = reactive({ width: 960, height: 640 })
@@ -73,12 +96,12 @@ const projectionName = ref('equirectangular')
 const initTime = ref(DEFAULT_INIT_TIME)
 const fcHour = ref('000')
 const level = ref('850')
-const layerType = ref('wind_speed_fill')
+const layerType = ref('wind_barb')
 const manifest = ref(null)
 const worldFeatures = ref(null)
 const chinaFeatures = ref(null)
 const activeSvgLayers = ref([])
-const selectedLayerTypes = ref(['wind_speed_fill', 'wind_barb'])
+const selectedLayerTypes = ref(['wind_barb'])
 const layerCombinationName = ref('默认天气图')
 const activeLayerCombinationName = ref('默认天气图')
 const savedLayerCombinations = ref(loadSavedLayerCombinations())
@@ -138,7 +161,13 @@ const vortexMinWindSpeed = ref(0)
 const vortexMinVorticity = ref(0.00006)
 const vortexTrackMinWindSpeed = ref(0)
 const showFutureVortexTracks = ref(true)
-const showOnlyFutureVortexTracks = ref(false)
+const showOnlyFutureVortexTracks = ref(true)
+const showHistoricalVortexTracks = computed({
+  get: () => !showOnlyFutureVortexTracks.value,
+  set: (value) => {
+    showOnlyFutureVortexTracks.value = !value
+  }
+})
 const loadingState = reactive({
   manifest: '未加载',
   svg: '未加载',
@@ -163,6 +192,7 @@ let drawQueued = false
 let activeLayerLoadId = 0
 let visibleTileLoadId = 0
 let loadedTileZoom = null
+let loadedRenderScale = 1
 let preloadRunId = 0
 let preloadTimer = null
 
@@ -856,22 +886,42 @@ function drawSvgLayer(context, projection, layer) {
   drawSvgImage(context, projection, layer.image, layer.record.bounds, layer)
 }
 
+function isContourLayer(layer) {
+  return String(layer?.type || '').includes('contour')
+}
+
+// 计算等值线膨胀半径（当前缩放坐标系下的本地单位）。
+// 屏幕像素补偿量随 k 从参考值线性增长，再除以 k 换算回被 context.scale(k) 缩放前的坐标。
+function contourDilationRadius(layer, k) {
+  if (!isContourLayer(layer) || !(k > 0) || k >= CONTOUR_REFERENCE_ZOOM) return 0
+  const screenPx = ((CONTOUR_REFERENCE_ZOOM - k) / CONTOUR_REFERENCE_ZOOM) * CONTOUR_MAX_DILATION_PX
+  return screenPx / k
+}
+
 function drawSvgImage(context, projection, image, bounds, layer) {
   if (!image || !bounds) return
   const topLeft = projection([bounds.lon_min, bounds.lat_max])
   const bottomRight = projection([bounds.lon_max, bounds.lat_min])
   if (!topLeft || !bottomRight) return
 
+  const dx = topLeft[0]
+  const dy = topLeft[1]
+  const dw = bottomRight[0] - topLeft[0]
+  const dh = bottomRight[1] - topLeft[1]
+
   context.globalAlpha = layer.isFill && fillLayerCount.value > 1 ? 0.5 : 1
   context.imageSmoothingEnabled = true
   context.imageSmoothingQuality = 'high'
-  context.drawImage(
-    image,
-    topLeft[0],
-    topLeft[1],
-    bottomRight[0] - topLeft[0],
-    bottomRight[1] - topLeft[1]
-  )
+
+  // 放大系数较小时，先以多方向偏移重绘等值线以加粗线条，使视觉线宽在各放大系数下保持一致。
+  const dilation = contourDilationRadius(layer, zoomTransform.value.k)
+  if (dilation > 0) {
+    for (const [ox, oy] of CONTOUR_DILATION_OFFSETS) {
+      context.drawImage(image, dx + ox * dilation, dy + oy * dilation, dw, dh)
+    }
+  }
+
+  context.drawImage(image, dx, dy, dw, dh)
   context.globalAlpha = 1
 }
 
@@ -933,25 +983,25 @@ function drawJetAxes(context, projection) {
     context.lineJoin = 'round'
     context.stroke()
 
-    if (showJetArrowHeads.value) drawJetArrowHead(context, projectedPoints)
+    if (showJetArrowHeads.value) drawLineArrowHead(context, projectedPoints, '#e11d48')
     context.restore()
   }
 }
 
-function drawJetArrowHead(context, projectedPoints) {
-  const arrow = jetArrowGeometry(projectedPoints)
+function drawLineArrowHead(context, projectedPoints, color, lengthPx = 24, halfWidthPx = 5) {
+  const arrow = lineArrowGeometry(projectedPoints)
   if (!arrow) return
 
   const { point: baseCenter, angle } = arrow
-  const length = 24 / zoomTransform.value.k
-  const halfWidth = 5 / zoomTransform.value.k
+  const length = lengthPx / zoomTransform.value.k
+  const halfWidth = halfWidthPx / zoomTransform.value.k
   const tip = [
     baseCenter[0] + length * Math.cos(angle),
     baseCenter[1] + length * Math.sin(angle)
   ]
   const normal = angle + Math.PI / 2
 
-  context.fillStyle = '#e11d48'
+  context.fillStyle = color
   context.beginPath()
   context.moveTo(tip[0], tip[1])
   context.lineTo(
@@ -966,7 +1016,7 @@ function drawJetArrowHead(context, projectedPoints) {
   context.fill()
 }
 
-function jetArrowGeometry(projectedPoints) {
+function lineArrowGeometry(projectedPoints) {
   if (projectedPoints.length < 2) return null
 
   const lengths = []
@@ -1017,36 +1067,49 @@ function drawVortexTracks(context, projection) {
   if (!visibleVortexTracks.value.length) return
 
   visibleVortexTracks.value.forEach((track) => {
-    const points = (track.track || []).filter((point) => Number.isFinite(point.lon) && Number.isFinite(point.lat))
-    if (points.length < 2) return
-
-    const currentStep = Number(fcHour.value)
-    const onlyFuture = showOnlyFutureVortexTracks.value
-    const showFuture = onlyFuture || showFutureVortexTracks.value
-    const pastPoints = onlyFuture
-      ? []
-      : points.filter((point) => Number(point.step ?? point.fc_hour) <= currentStep)
-    const futurePoints = showFuture
-      ? points.filter((point) => Number(point.step ?? point.fc_hour) >= currentStep)
-      : []
     const color = trackColor(track)
     const lineWidth = track.warm ? 2.1 / zoomTransform.value.k : 1.5 / zoomTransform.value.k
 
-    drawTrackSegment(context, projection, pastPoints, color, lineWidth, false)
-    drawTrackSegment(context, projection, futurePoints, color, lineWidth, true)
+    for (const segment of visibleVortexTrackSegments(track)) {
+      drawTrackSegment(context, projection, segment.points, color, lineWidth, segment.dashed)
+    }
   })
+}
+
+function visibleVortexTrackSegments(track) {
+  const points = (track.track || []).filter((point) => Number.isFinite(point.lon) && Number.isFinite(point.lat))
+  if (points.length < 2) return []
+
+  const currentStep = Number(fcHour.value)
+  const onlyFuture = showOnlyFutureVortexTracks.value
+  const showFuture = onlyFuture || showFutureVortexTracks.value
+  const pastPoints = onlyFuture
+    ? []
+    : points.filter((point) => Number(point.step ?? point.fc_hour) <= currentStep)
+  const futurePoints = showFuture
+    ? points.filter((point) => Number(point.step ?? point.fc_hour) >= currentStep)
+    : []
+
+  return [
+    { points: pastPoints, dashed: false },
+    { points: futurePoints, dashed: true }
+  ]
 }
 
 function drawTrackSegment(context, projection, points, color, lineWidth, dashed) {
   if (points.length < 2) return
 
+  const projectedPoints = points
+    .map((point) => projection([point.lon, point.lat]))
+    .filter((point) => point && Number.isFinite(point[0]) && Number.isFinite(point[1]))
+
+  if (projectedPoints.length < 2) return
+
   context.save()
   context.beginPath()
-  points.forEach((point, pointIndex) => {
-    const xy = projection([point.lon, point.lat])
-    if (!xy) return
-    if (pointIndex === 0) context.moveTo(xy[0], xy[1])
-    else context.lineTo(xy[0], xy[1])
+  projectedPoints.forEach((point, pointIndex) => {
+    if (pointIndex === 0) context.moveTo(point[0], point[1])
+    else context.lineTo(point[0], point[1])
   })
   context.strokeStyle = color
   context.lineWidth = lineWidth
@@ -1054,6 +1117,7 @@ function drawTrackSegment(context, projection, points, color, lineWidth, dashed)
   context.lineCap = 'round'
   context.lineJoin = 'round'
   context.stroke()
+  drawLineArrowHead(context, projectedPoints, color, 16, 4)
   context.restore()
 }
 
@@ -1214,13 +1278,15 @@ function findNearestVortexTrack(mouse) {
   let nearestDistance = Infinity
 
   visibleVortexTracks.value.forEach((track) => {
-    for (const point of track.track || []) {
-      const screen = transformedPoint(projection, [point.lon, point.lat])
-      if (!screen) continue
-      const distance = Math.hypot(screen[0] - mouse.x, screen[1] - mouse.y)
-      if (distance < nearestDistance) {
-        nearestDistance = distance
-        nearest = { track, point }
+    for (const segment of visibleVortexTrackSegments(track)) {
+      for (const point of segment.points) {
+        const screen = transformedPoint(projection, [point.lon, point.lat])
+        if (!screen) continue
+        const distance = Math.hypot(screen[0] - mouse.x, screen[1] - mouse.y)
+        if (distance < nearestDistance) {
+          nearestDistance = distance
+          nearest = { track, point }
+        }
       }
     }
   })
@@ -1289,6 +1355,8 @@ async function loadActiveLayer() {
   const projection = buildProjection()
   const tileZoom = getTileZoom(zoomTransform.value.k)
   loadedTileZoom = tileZoom
+  const renderScale = renderScaleForZoom(zoomTransform.value.k)
+  loadedRenderScale = renderScale
   const candidates = selectedLayerTypes.value.map((type) => ({
     type,
     record: recordForLayerType(type)
@@ -1305,8 +1373,8 @@ async function loadActiveLayer() {
     loadingState.svg = '加载中'
     const loadedLayers = await Promise.all(loadable.map((item, order) => (
       hasTiles(item.record)
-        ? loadSvgTileLayer(item, order, tileZoom, projection)
-        : loadSvgLayer(item, order)
+        ? loadSvgTileLayer(item, order, tileZoom, projection, renderScale)
+        : loadSvgLayer(item, order, renderScale)
     )))
     if (loadId !== activeLayerLoadId) return
     activeSvgLayers.value = loadedLayers.filter(Boolean)
@@ -1320,7 +1388,7 @@ async function loadActiveLayer() {
   }
 }
 
-async function loadSvgTileLayer({ type, record }, order, desiredZ, projection) {
+async function loadSvgTileLayer({ type, record }, order, desiredZ, projection, renderScale = 1) {
   const z = resolveTileZoom(record, desiredZ)
   if (z == null) return null
 
@@ -1331,7 +1399,7 @@ async function loadSvgTileLayer({ type, record }, order, desiredZ, projection) {
 
   if (!visibleTiles.length) return null
 
-  const loadedTiles = (await Promise.all(visibleTiles.map(loadSvgTile))).filter(Boolean)
+  const loadedTiles = (await Promise.all(visibleTiles.map((tile) => loadSvgTile(tile, renderScale)))).filter(Boolean)
   if (!loadedTiles.length) return null
 
   return {
@@ -1349,6 +1417,7 @@ async function loadVisibleTileDelta() {
   const loadId = ++visibleTileLoadId
   const projection = buildProjection()
   const desiredZ = loadedTileZoom ?? getTileZoom(zoomTransform.value.k)
+  const renderScale = loadedRenderScale
   const additions = await Promise.all(activeSvgLayers.value.map(async (layer) => {
     if (!Array.isArray(layer.tiles) || !hasTiles(layer.record)) return null
 
@@ -1362,7 +1431,7 @@ async function loadVisibleTileDelta() {
       .filter((tile) => isTileVisible(tile, projection, canvasSize, zoomTransform.value))
 
     if (!missingVisibleTiles.length) return null
-    const loadedTiles = (await Promise.all(missingVisibleTiles.map(loadSvgTile))).filter(Boolean)
+    const loadedTiles = (await Promise.all(missingVisibleTiles.map((tile) => loadSvgTile(tile, renderScale)))).filter(Boolean)
     return loadedTiles.length ? { layer, loadedTiles } : null
   }))
 
@@ -1376,9 +1445,9 @@ async function loadVisibleTileDelta() {
   if (changed) requestDraw()
 }
 
-async function loadSvgTile(tile) {
+async function loadSvgTile(tile, renderScale = 1) {
   const url = tileUrl(tile)
-  const image = await loadSvgImage(url)
+  const image = await loadSvgImage(url, renderScale)
   if (!image) return null
   return {
     image,
@@ -1390,9 +1459,9 @@ async function loadSvgTile(tile) {
   }
 }
 
-async function loadSvgLayer({ type, record }, order) {
+async function loadSvgLayer({ type, record }, order, renderScale = 1) {
   const url = layerUrl(record)
-  const image = await loadSvgImage(url)
+  const image = await loadSvgImage(url, renderScale)
   if (!image) return null
   return {
     type,
@@ -1403,20 +1472,52 @@ async function loadSvgLayer({ type, record }, order) {
   }
 }
 
-async function loadSvgImage(url) {
-  if (!url) return null
-  try {
-    const cached = await cache.get(url)
-    if (cached) return cached
-
+function decodeImage(src) {
+  return new Promise((resolve, reject) => {
     const image = new Image()
     image.crossOrigin = 'anonymous'
-    await new Promise((resolve, reject) => {
-      image.onload = resolve
-      image.onerror = reject
-      image.src = url
-    })
-    await cache.set(url, image)
+    image.onload = () => resolve(image)
+    image.onerror = reject
+    image.src = src
+  })
+}
+
+// 放大 SVG 根节点的 width/height（保留 viewBox），使浏览器以更高分辨率栅格化矢量图，
+// 从而在高放大系数下获得更清晰的等值线与填色边缘。
+function scaleSvgMarkup(text, scale) {
+  return text.replace(/<svg\b[^>]*>/i, (tag) => (
+    tag.replace(/\b(width|height)\s*=\s*"(\d*\.?\d+)([a-z%]*)"/gi, (match, attr, value, unit) => (
+      `${attr}="${Number.parseFloat(value) * scale}${unit}"`
+    ))
+  ))
+}
+
+async function loadSvgImage(url, renderScale = 1) {
+  if (!url) return null
+  const scale = renderScale > 1 ? renderScale : 1
+  const cacheKey = scale > 1 ? `${url}@${scale}x` : url
+  try {
+    const cached = await cache.get(cacheKey)
+    if (cached) return cached
+
+    let image
+    if (scale > 1) {
+      // 以更高的超采样倍率重新栅格化：拉取 SVG 源文本、放大根节点尺寸后再解码。
+      const response = await fetch(url)
+      if (!response.ok) return null
+      const markup = scaleSvgMarkup(await response.text(), scale)
+      const blobUrl = URL.createObjectURL(new Blob([markup], { type: 'image/svg+xml' }))
+      try {
+        image = await decodeImage(blobUrl)
+      } finally {
+        URL.revokeObjectURL(blobUrl)
+      }
+    } else {
+      image = await decodeImage(url)
+    }
+
+    if (!image) return null
+    await cache.set(cacheKey, image)
     return image
   } catch {
     return null
@@ -1690,6 +1791,7 @@ const context = {
   SHEAR_COLORS,
   shellRef,
   showFutureVortexTracks,
+  showHistoricalVortexTracks,
   showJetArrowHeads,
   showJetAxes,
   showRawPoints,
@@ -1782,7 +1884,10 @@ onMounted(async () => {
     .on('zoom', (event) => {
       zoomTransform.value = event.transform
       const nextTileZoom = getTileZoom(event.transform.k)
-      if (selectedLayerHasTiles() && nextTileZoom !== loadedTileZoom) {
+      const nextRenderScale = renderScaleForZoom(event.transform.k)
+      const tileZoomChanged = selectedLayerHasTiles() && nextTileZoom !== loadedTileZoom
+      const renderScaleChanged = nextRenderScale !== loadedRenderScale && activeSvgLayers.value.length > 0
+      if (tileZoomChanged || renderScaleChanged) {
         loadActiveLayer()
       } else if (selectedLayerHasTiles()) {
         loadVisibleTileDelta()

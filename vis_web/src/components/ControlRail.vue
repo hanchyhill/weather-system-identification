@@ -47,7 +47,7 @@ const {
   selectedLayerLabels,
   selectedLayerTypes,
   SHEAR_COLORS,
-  showFutureVortexTracks,
+  showHistoricalVortexTracks,
   showJetArrowHeads,
   showJetAxes,
   showRawPoints,
@@ -59,7 +59,6 @@ const {
   showVortexTracks,
   showWarmOnlyCenters,
   showWarmOnlyTracks,
-  showOnlyFutureVortexTracks,
   systemTabs,
   troughLineWidth,
   troughMinLength,
@@ -74,6 +73,8 @@ const {
   vortexMinWindSpeed,
   vortexTrackMinWindSpeed
 } = useWeatherViewContext()
+
+const visibleProjectionOptions = projectionOptions.filter((option) => option.value !== 'lambert')
 </script>
 
 <template>
@@ -193,7 +194,7 @@ const {
       <label>投影</label>
       <div class="segmented">
         <button
-          v-for="option in projectionOptions"
+          v-for="option in visibleProjectionOptions"
           :key="option.value"
           :class="{ active: projectionName === option.value }"
           @click="projectionName = option.value"
@@ -272,12 +273,8 @@ const {
           <n-switch v-model:value="showWarmOnlyTracks" size="small" :disabled="!isVortexTrackLevel" />
         </div>
         <div class="option-row">
-          <span>未来轨迹</span>
-          <n-switch v-model:value="showFutureVortexTracks" size="small" :disabled="!isVortexTrackLevel" />
-        </div>
-        <div class="option-row">
-          <span>仅未来轨迹</span>
-          <n-switch v-model:value="showOnlyFutureVortexTracks" size="small" :disabled="!isVortexTrackLevel" />
+          <span>历史轨迹</span>
+          <n-switch v-model:value="showHistoricalVortexTracks" size="small" :disabled="!isVortexTrackLevel" />
         </div>
         <div class="option-list">
           <label>
