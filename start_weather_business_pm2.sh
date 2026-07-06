@@ -4,7 +4,6 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WEB_ROOT="${PROJECT_ROOT}/vis_web"
 PY_CONFIG="${PROJECT_ROOT}/ecosystem.weather-business.config.js"
-WEB_CONFIG="${WEB_ROOT}/ecosystem.config.cjs"
 
 export WEATHER_OUTPUT_ROOT="${WEATHER_OUTPUT_ROOT:-/data/weather_vis}"
 export WEATHER_PRODUCTS_ROOT="${WEATHER_PRODUCTS_ROOT:-${WEATHER_OUTPUT_ROOT}/products}"
@@ -55,7 +54,7 @@ pnpm build
 cd "${PROJECT_ROOT}"
 pm2 delete weather-draw-schedule 2>/dev/null || true
 pm2 delete weather-trough 2>/dev/null || true
+pm2 delete weather-vis-web 2>/dev/null || true
 pm2 startOrReload "${PY_CONFIG}" --update-env
-pm2 startOrReload "${WEB_CONFIG}" --update-env
 pm2 save
-pm2 status weather-draw-schedule weather-trough weather-vis-web
+pm2 status weather-draw-schedule weather-trough
