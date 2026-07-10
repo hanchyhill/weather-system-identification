@@ -14,6 +14,8 @@ const {
 
 // 起报时次每 12 小时一档，向前追溯的档数（与参考实现一致，共 11 行）。
 const INIT_TIME_ROW_COUNT = 11
+// 未来起报时次序列（相对当前起报时次的小时偏移），置于表格顶部，最新在最上。
+const FUTURE_INIT_OFFSETS = [48, 36, 24, 12]
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 // 预报时效（小时），直接取本项目的 DEFAULT_FC_HOURS，保证时次与后端产品匹配。
@@ -97,22 +99,35 @@ const timeTableHeader = computed(() => {
   })
 })
 
-// 矩阵主体：行=各起报时次，列分组沿用第一行的有效时刻分组；
-// 单元格若在该行的有效时刻集合中命中则可选，记录对应 fc 与起报时次。
+// 矩阵主体：行=各起报时次（顶部为未来 4 个起报时次，其后为当前起报时次及向前追溯的历史时次），
+// 列分组固定沿用“当前起报时次”的有效时刻分组；未来时次超出当前最大有效时刻的部分因无对应列而不显示。
 const timeTable = computed(() => {
   const baseMs = parseInitTimeMs(initTime.value)
   if (baseMs == null) return []
 
   const rawRows = []
+  // 未来起报时次（+48h → +12h，最新在最上）。
+  FUTURE_INIT_OFFSETS.forEach((offset) => {
+    const rowInitMs = baseMs + offset * 60 * 60 * 1000
+    rawRows.push({
+      initMs: rowInitMs,
+      isFuture: true,
+      times: fcHoursNumeric.map((fc) => rowInitMs + fc * 60 * 60 * 1000)
+    })
+  })
+  // 当前起报时次及向前追溯的历史时次。
   for (let i = 0; i < INIT_TIME_ROW_COUNT; i += 1) {
     const rowInitMs = baseMs - i * 12 * 60 * 60 * 1000
     rawRows.push({
       initMs: rowInitMs,
+      isFuture: false,
       times: fcHoursNumeric.map((fc) => rowInitMs + fc * 60 * 60 * 1000)
     })
   }
 
-  const firstColumns = splitByDate(rawRows[0].times)
+  // 列分组始终以当前起报时次为基准，保证未来/历史行的显示范围都对齐当前起报时次。
+  const baseTimes = fcHoursNumeric.map((fc) => baseMs + fc * 60 * 60 * 1000)
+  const firstColumns = splitByDate(baseTimes)
 
   return rawRows.map((row, rowIndex) => {
     const timeSet = new Map(row.times.map((ms, index) => [ms, index]))
@@ -135,6 +150,8 @@ const timeTable = computed(() => {
     ))
     return {
       initMs: row.initMs,
+      isFuture: row.isFuture,
+      isBase: row.initMs === baseMs,
       rowLabel: fmtBeijingRow(row.initMs),
       columns
     }
@@ -181,7 +198,7 @@ function cancelHighlight() {
     <div class="mts-popover">
       <div class="mts-header">
         <strong>多时次选择器</strong>
-        <span>行=起报时次（北京时），列=预报有效时刻，绿格可选</span>
+        <span>行=起报时次（北京时，含未来 4 档），列=预报有效时刻，绿格可选</span>
       </div>
       <div class="mts-table-box">
         <table class="mts-table">
@@ -221,7 +238,12 @@ function cancelHighlight() {
             <tr v-for="(row, rowIndex) in timeTable" :key="`r-${rowIndex}`">
               <th
                 class="mts-row-head"
-                :class="{ 'mts-highlight': rowIndex === tableHighlight.rowIndex }"
+                :class="{
+                  'mts-highlight': rowIndex === tableHighlight.rowIndex,
+                  'mts-row-future': row.isFuture,
+                  'mts-row-base': row.isBase
+                }"
+                :title="row.isFuture ? '未来起报时次' : (row.isBase ? '当前起报时次' : '历史起报时次')"
               >
                 {{ row.rowLabel }}
               </th>
@@ -324,6 +346,19 @@ function cancelHighlight() {
   padding: 0 8px;
   background: #f1f5f9;
   font-weight: 600;
+}
+
+/* 未来起报时次行：暖色底以区别于历史行。 */
+.mts-row-future {
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+/* 当前（基准）起报时次行：加左侧色条并高亮，强调“以当前起报时次为基准”。 */
+.mts-row-base {
+  background: #ecfeff;
+  color: #0e7490;
+  box-shadow: inset 3px 0 0 #0891b2;
 }
 
 .mts-header-date {

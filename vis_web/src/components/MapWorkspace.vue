@@ -1,27 +1,41 @@
 <script setup>
-import { ChevronLeft, ChevronRight, RotateCcw } from 'lucide-vue-next'
+import { RotateCcw } from 'lucide-vue-next'
 import {
   NButton,
-  NButtonGroup,
   NTooltip
 } from 'naive-ui'
-import VueSlider from 'vue-slider-component'
-import 'vue-slider-component/theme/default.css'
 
 import { useWeatherViewContext } from '../context/weatherViewContext'
-import MultiTimeSelector from './MultiTimeSelector.vue'
 import DrawingToolbar from './DrawingToolbar.vue'
 import ElementSelector from './ElementSelector.vue'
+import ForecastSlider from './ForecastSlider.vue'
+import MultiMapSelector from './MultiMapSelector.vue'
+import MultiTimeSelector from './MultiTimeSelector.vue'
+
+const props = defineProps({
+  compact: Boolean,
+  panelTitle: {
+    type: String,
+    default: ''
+  },
+  showPanelTitle: {
+    type: Boolean,
+    default: true
+  },
+  viewContext: {
+    type: Object,
+    default: null
+  }
+})
+
+const viewContext = props.viewContext || useWeatherViewContext()
 
 const {
   canvasRef,
-  changeFcHour,
   drawMode,
   fcHour,
-  fcHourIndex,
-  forecastValidTimeLabel,
+  forecastValidTimeBjtLabel,
   formatNumber,
-  getSliderTooltip,
   handleCanvasClick,
   handleCanvasContextMenu,
   handleCanvasDblClick,
@@ -35,24 +49,27 @@ const {
   hoverVortexTrack,
   initTime,
   level,
-  markSlider,
   mouseGeo,
   preloading,
   resetView,
-  scrollForecastSlider,
   shellRef,
-  sliderIndexCount,
-  sliderOpts,
   zoomTransform
-} = useWeatherViewContext()
+} = viewContext
 </script>
 
 <template>
-  <section class="map-workspace">
+  <section class="map-workspace" :class="{ 'map-workspace-compact': compact }">
     <div class="toolbar">
       <div>
-        <strong>{{ initTime }}</strong>
-        <span>+{{ fcHour }} h</span>
+        <template v-if="compact">
+          <strong v-if="showPanelTitle && panelTitle">{{ panelTitle }}</strong>
+          <span>+{{ fcHour }} h</span>
+          <strong>{{ forecastValidTimeBjtLabel }}</strong>
+        </template>
+        <template v-else>
+          <strong>{{ initTime }}</strong>
+          <span>+{{ fcHour }} h</span>
+        </template>
         <span>{{ level === 'surface' ? '地面' : `${level} hPa` }}</span>
       </div>
       <n-tooltip trigger="hover">
@@ -65,43 +82,7 @@ const {
       </n-tooltip>
     </div>
 
-    <div class="forecast-slider-row">
-      <div class="forecast-slider-actions">
-        <span>预报时效</span>
-        <n-button-group size="small">
-          <n-tooltip trigger="hover">
-            <template #trigger>
-              <n-button secondary @click="changeFcHour('index', -1)" @contextmenu.prevent="changeFcHour('hour', -24)">
-                <ChevronLeft :size="16" />
-              </n-button>
-            </template>
-            左键减 1 档，右键减 24 小时
-          </n-tooltip>
-          <n-tooltip trigger="hover">
-            <template #trigger>
-              <n-button secondary @click="changeFcHour('index', 1)" @contextmenu.prevent="changeFcHour('hour', 24)">
-                <ChevronRight :size="16" />
-              </n-button>
-            </template>
-            左键加 1 档，右键加 24 小时
-          </n-tooltip>
-        </n-button-group>
-      </div>
-      <div class="forecast-slider-container" @wheel="scrollForecastSlider">
-        <vue-slider
-          v-model="fcHourIndex"
-          v-bind="sliderOpts"
-          :tooltip-formatter="getSliderTooltip"
-          :marks="markSlider"
-          :min="0"
-          :max="sliderIndexCount - 1"
-        />
-      </div>
-      <div class="forecast-slider-readout">
-        <strong>+{{ fcHour }} h</strong>
-        <span>{{ forecastValidTimeLabel }} UTC</span>
-      </div>
-    </div>
+    <ForecastSlider v-if="!compact" />
 
     <div ref="shellRef" class="canvas-shell">
       <canvas
@@ -116,16 +97,20 @@ const {
         @contextmenu="handleCanvasContextMenu"
       />
 
-      <div class="multi-time-selector-anchor">
+      <div v-if="!compact" class="multi-time-selector-anchor">
         <MultiTimeSelector />
       </div>
 
-      <div class="drawing-toolbar-anchor">
+      <div v-if="!compact" class="drawing-toolbar-anchor">
         <DrawingToolbar />
       </div>
 
-      <div class="element-selector-anchor">
+      <div v-if="!compact" class="element-selector-anchor">
         <ElementSelector />
+      </div>
+
+      <div v-if="!compact" class="multi-map-selector-anchor">
+        <MultiMapSelector />
       </div>
 
       <div v-if="mouseGeo" class="coordinate-readout">

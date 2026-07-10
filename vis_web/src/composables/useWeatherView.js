@@ -14,7 +14,7 @@ import {
   persistElementConfig
 } from '../utils/elementSelectorConfig'
 
-export function useWeatherView() {
+export function useWeatherView(initialView = {}) {
 
 // 计算最新起报时次，逻辑与后端 src/weather_common.py 的 calLatestBaseTime 保持一致：
 //   UTC 07-19 时 -> 当日 00 时；19 时以后 -> 当日 12 时；07 时以前 -> 前一日 12 时。
@@ -96,11 +96,19 @@ function renderScaleForZoom(k) {
   return RENDER_SCALE_MAX
 }
 
+const initialLayers = Array.isArray(initialView.selectedLayerTypes) && initialView.selectedLayerTypes.length
+  ? initialView.selectedLayerTypes.map(String)
+  : ['wind_barb']
+const compactView = Boolean(initialView.compact)
+const minCanvasWidth = compactView ? 260 : 540
+const minCanvasHeight = compactView ? 200 : 420
+const syncState = initialView.syncState || null
+const syncId = initialView.syncId || null
 const canvasRef = ref(null)
 const shellRef = ref(null)
 const canvasSize = reactive({ width: 960, height: 640 })
 const zoomTransform = ref(d3.zoomIdentity)
-const projectionName = ref('equirectangular')
+const projectionName = ref(initialView.projectionName || 'equirectangular')
 
 // —— 手绘图形（多常用天气图元）——
 // 每个图形以经纬度存储，随地图平移缩放。kind：line/box/point；render 决定样式。
@@ -139,21 +147,25 @@ const hoverDeleteIndex = ref(-1)
 let boxStartGeo = null
 let boxDragging = false
 let drawSeq = 0
-const initTime = ref(DEFAULT_INIT_TIME)
-const fcHour = ref('000')
-const level = ref('850')
-const layerType = ref('wind_barb')
+const initTime = ref(initialView.initTime || DEFAULT_INIT_TIME)
+const fcHour = ref(normalizeFcHour(initialView.fcHour || '000'))
+const level = ref(String(initialView.level || '850'))
+const layerType = ref(initialLayers[0])
 const manifest = ref(null)
 const worldFeatures = ref(null)
 const chinaFeatures = ref(null)
 const activeSvgLayers = ref([])
-const selectedLayerTypes = ref(['wind_barb'])
+const selectedLayerTypes = ref(initialLayers)
 const layerCombinationName = ref('默认天气图')
 const activeLayerCombinationName = ref('默认天气图')
 const savedLayerCombinations = ref(loadSavedLayerCombinations())
 // 元素选择器（要素表格）配置与当前选中标识。
 const elementConfig = ref(loadElementConfig())
 const activeElementKey = ref('')
+const multiMapMode = ref(null)
+const multiMapPanels = ref([])
+const multiForecastInterval = ref('24')
+const multiForecastPanelCount = ref(4)
 const troughData = ref(null)
 const jetData = ref(null)
 const vortexCenters = ref([])
@@ -164,7 +176,7 @@ const showJetAxes = ref(false)
 const showRawPoints = ref(false)
 const showVortexCenters = ref(true)
 const showVortexTracks = ref(true)
-const showWarmOnlyTracks = ref(false)
+const showWarmOnlyTracks = ref(true)
 const showWarmOnlyCenters = ref(false)
 const showTooltip = ref(true)
 const showTileDebug = ref(false)
@@ -237,6 +249,7 @@ const cache = new SvgImageCache()
 
 let resizeObserver = null
 let zoomBehavior = null
+let applyingSynchronizedZoom = false
 let drawQueued = false
 let activeLayerLoadId = 0
 let visibleTileLoadId = 0
@@ -318,6 +331,12 @@ const fcHourIndex = computed({
 
 const sliderIndexCount = computed(() => sliderFcHours.value.length)
 const forecastValidTimeLabel = computed(() => getSliderTooltip(fcHourIndex.value))
+const forecastValidTimeBjtLabel = computed(() => {
+  const initDate = parseInitTime(initTime.value)
+  if (!initDate) return '-- BJT'
+  const validTime = new Date(initDate.getTime() + (Number(fcHour.value) + 8) * 60 * 60 * 1000)
+  return `${padTimePart(validTime.getUTCMonth() + 1)}-${padTimePart(validTime.getUTCDate())} ${padTimePart(validTime.getUTCHours())} BJT`
+})
 
 const fcHourOptions = computed(() => DEFAULT_FC_HOURS.map((value) => {
   const disabled = Boolean(manifest.value && manifestFcHourSet.value && !manifestFcHourSet.value.has(value))
@@ -598,6 +617,173 @@ function setSelectedLayerTypes(values) {
     selectedLayerTypes.value = next
   }
   return next
+}
+
+const multiMapModeOptions = [
+  { value: 'init', label: '多起报', description: '比较当前与前 3 个起报时次' },
+  { value: 'forecast', label: '多时效', description: '比较相邻的 4 个预报时效' },
+  { value: 'element', label: '多要素', description: '比较当前层次的 4 个要素组合' }
+]
+
+const multiForecastIntervalOptions = [
+  { value: '24', label: '24h' },
+  { value: '6', label: '6h' },
+  { value: '48', label: '48h' },
+  { value: 'continuous', label: '连续' }
+]
+const multiForecastPanelCountOptions = [4, 6, 8, 9]
+
+function formatInitTime(date) {
+  return `${date.getUTCFullYear()}${padTimePart(date.getUTCMonth() + 1)}${padTimePart(date.getUTCDate())}${padTimePart(date.getUTCHours())}`
+}
+
+function shiftedInitTime(value, offsetHours) {
+  const date = parseInitTime(value)
+  return date ? formatInitTime(new Date(date.getTime() + offsetHours * 60 * 60 * 1000)) : value
+}
+
+function panelView(overrides = {}) {
+  return {
+    initTime: initTime.value,
+    fcHour: fcHour.value,
+    level: level.value,
+    selectedLayerTypes: [...selectedLayerTypes.value],
+    projectionName: projectionName.value,
+    compact: true,
+    showPanelTitle: true,
+    valid: true,
+    ...overrides
+  }
+}
+
+function multiForecastDescriptors() {
+  const hours = sliderFcHours.value
+  const startIndex = Math.max(0, hours.indexOf(normalizeFcHour(fcHour.value)))
+  const panelCount = multiForecastPanelCount.value
+
+  if (multiForecastInterval.value === 'continuous') {
+    return Array.from({ length: panelCount }, (_, index) => {
+      const value = hours[startIndex + index] || null
+      return { value, valid: Boolean(value) }
+    })
+  }
+
+  const interval = Number(multiForecastInterval.value)
+  const startHour = Number(fcHour.value)
+  return Array.from({ length: panelCount }, (_, index) => {
+    const value = normalizeFcHour(startHour + (interval * index))
+    return { value, valid: hours.includes(value) }
+  })
+}
+
+function setMultiForecastInterval(value) {
+  if (!multiForecastIntervalOptions.some((option) => option.value === value)) return
+  multiForecastInterval.value = value
+}
+
+function setMultiForecastPanelCount(value) {
+  const count = Number(value)
+  if (!multiForecastPanelCountOptions.includes(count)) return
+  multiForecastPanelCount.value = count
+}
+
+function shiftMultiForecastPage(direction) {
+  if (multiMapMode.value !== 'forecast') return
+  const hours = sliderFcHours.value
+  const startIndex = hours.indexOf(normalizeFcHour(fcHour.value))
+  if (startIndex < 0) return
+
+  if (multiForecastInterval.value === 'continuous') {
+    const nextIndex = startIndex + (Number(direction) * multiForecastPanelCount.value)
+    if (nextIndex >= 0 && nextIndex < hours.length) fcHour.value = hours[nextIndex]
+    return
+  }
+
+  const offset = Number(multiForecastInterval.value) * multiForecastPanelCount.value
+  const nextValue = normalizeFcHour(Number(fcHour.value) + (Number(direction) * offset))
+  if (hours.includes(nextValue)) fcHour.value = nextValue
+}
+
+const canShiftMultiForecastBackward = computed(() => {
+  const hours = sliderFcHours.value
+  const startIndex = hours.indexOf(normalizeFcHour(fcHour.value))
+  if (startIndex < 0) return false
+  if (multiForecastInterval.value === 'continuous') {
+    return startIndex - multiForecastPanelCount.value >= 0
+  }
+  const nextValue = normalizeFcHour(Number(fcHour.value) - (Number(multiForecastInterval.value) * multiForecastPanelCount.value))
+  return hours.includes(nextValue)
+})
+
+const canShiftMultiForecastForward = computed(() => {
+  const hours = sliderFcHours.value
+  const startIndex = hours.indexOf(normalizeFcHour(fcHour.value))
+  if (startIndex < 0) return false
+  if (multiForecastInterval.value === 'continuous') {
+    return startIndex + multiForecastPanelCount.value < hours.length
+  }
+  const nextValue = normalizeFcHour(Number(fcHour.value) + (Number(multiForecastInterval.value) * multiForecastPanelCount.value))
+  return hours.includes(nextValue)
+})
+
+function multiElementPanels() {
+  const current = {
+    label: activeLayerCombinationName.value || selectedLayerLabels.value,
+    level: level.value,
+    layers: [...selectedLayerTypes.value]
+  }
+  const candidates = [current]
+  const seen = new Set([`${current.level}|${current.layers.join(',')}`])
+
+  for (const column of elementConfig.value.columns) {
+    const elements = elementConfig.value.cells[cellKey(level.value, column.key)] || []
+    for (const element of elements) {
+      const key = `${element.level}|${(element.layers || []).join(',')}`
+      if (!element.layers?.length || seen.has(key)) continue
+      candidates.push(element)
+      seen.add(key)
+      if (candidates.length === 4) return candidates
+    }
+  }
+
+  return candidates
+}
+
+function openMultiMap(mode) {
+  if (!multiMapModeOptions.some((option) => option.value === mode)) return
+
+  if (mode === 'init') {
+    multiMapPanels.value = [0, -12, -24, -36].map((offsetHours) => {
+      const value = shiftedInitTime(initTime.value, offsetHours)
+      return panelView({
+        id: `init-${value}-${fcHour.value}`,
+        title: `${value} 起报`,
+        initTime: value
+      })
+    })
+  } else if (mode === 'forecast') {
+    multiMapPanels.value = multiForecastDescriptors().map(({ value, valid }, index) => panelView({
+      id: `forecast-${initTime.value}-${multiForecastInterval.value}-${index}-${value || 'invalid'}`,
+      title: value ? `+${value} h` : '无可用时效',
+      fcHour: value || fcHour.value,
+      showPanelTitle: false,
+      valid
+    }))
+  } else {
+    multiMapPanels.value = multiElementPanels().map((element, index) => panelView({
+      id: `element-${initTime.value}-${fcHour.value}-${index}-${element.level}-${element.layers.join('-')}`,
+      title: element.label,
+      level: element.level,
+      selectedLayerTypes: [...element.layers]
+    }))
+  }
+
+  multiMapMode.value = mode
+}
+
+function closeMultiMap() {
+  multiMapMode.value = null
+  multiMapPanels.value = []
 }
 
 function loadSavedLayerCombinations() {
@@ -940,6 +1126,37 @@ function applyDefaultView(animate = false) {
   }
 }
 
+function transformFromSync(snapshot) {
+  const x = Number(snapshot?.x)
+  const y = Number(snapshot?.y)
+  const k = Number(snapshot?.k)
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(k)) return null
+  return d3.zoomIdentity.translate(x, y).scale(k)
+}
+
+function applySynchronizedZoom(snapshot) {
+  if (!zoomBehavior || !canvasRef.value) return
+  const nextTransform = transformFromSync(snapshot)
+  if (!nextTransform) return
+
+  const current = zoomTransform.value
+  if (current.x === nextTransform.x && current.y === nextTransform.y && current.k === nextTransform.k) return
+
+  applyingSynchronizedZoom = true
+  try {
+    d3.select(canvasRef.value).call(zoomBehavior.transform, nextTransform)
+  } finally {
+    applyingSynchronizedZoom = false
+  }
+}
+
+function broadcastCursor(geo) {
+  if (!syncState || !syncId) return
+  syncState.cursor = geo
+    ? { lon: geo.lon, lat: geo.lat, source: syncId }
+    : null
+}
+
 function transformedPoint(projection, lonLat) {
   const projected = projection(lonLat)
   if (!projected) return null
@@ -1003,6 +1220,27 @@ function drawMap() {
 
   context.restore()
   drawHudFrame(context)
+  drawSynchronizedCursor(context, projection)
+}
+
+function drawSynchronizedCursor(context, projection) {
+  const cursor = syncState?.cursor
+  if (!cursor || cursor.source === syncId) return
+  const point = transformedPoint(projection, [cursor.lon, cursor.lat])
+  if (!point) return
+  const [x, y] = point
+  if (x < 0 || x > canvasSize.width || y < 0 || y > canvasSize.height) return
+
+  context.save()
+  context.strokeStyle = '#1f7a8c'
+  context.lineWidth = 1.6
+  context.beginPath()
+  context.moveTo(x - 8, y)
+  context.lineTo(x + 8, y)
+  context.moveTo(x, y - 8)
+  context.lineTo(x, y + 8)
+  context.stroke()
+  context.restore()
 }
 
 function trackColor(track) {
@@ -1909,6 +2147,7 @@ function handleMouseMove(event) {
     return
   }
   mouseGeo.value = screenToGeo(event)
+  broadcastCursor(mouseGeo.value)
   hoverVortexCenter.value = findNearestVortexCenter(mouseGeo.value)
   hoverVortexTrack.value = hoverVortexCenter.value ? null : findNearestVortexTrack(mouseGeo.value)
   hoverJetLine.value = hoverVortexCenter.value || hoverVortexTrack.value ? null : findNearestJetLine(mouseGeo.value)
@@ -1922,6 +2161,7 @@ function handleMouseLeave() {
     requestDraw()
     return
   }
+  broadcastCursor(null)
   clearHoverState()
 }
 
@@ -1937,8 +2177,8 @@ function resizeCanvas() {
   const element = shellRef.value
   if (!element) return
   const rect = element.getBoundingClientRect()
-  canvasSize.width = Math.max(540, Math.floor(rect.width))
-  canvasSize.height = Math.max(420, Math.floor(rect.height))
+  canvasSize.width = Math.max(minCanvasWidth, Math.floor(rect.width))
+  canvasSize.height = Math.max(minCanvasHeight, Math.floor(rect.height))
   requestDraw()
 }
 
@@ -2217,6 +2457,7 @@ const context = {
   finishCurrentLine,
   undoDrawing,
   clearDrawings,
+  closeMultiMap,
   hasDrawings,
   draftPointCount,
   handleCanvasPointerDown,
@@ -2225,6 +2466,7 @@ const context = {
   handleCanvasDblClick,
   handleCanvasContextMenu,
   forecastValidTimeLabel,
+  forecastValidTimeBjtLabel,
   formatNumber,
   getSliderTooltip,
   handleMouseLeave,
@@ -2265,7 +2507,15 @@ const context = {
   levelOptions,
   loadManifest,
   loadingState,
+  multiMapMode,
+  multiMapModeOptions,
+  multiMapPanels,
+  multiForecastInterval,
+  multiForecastIntervalOptions,
+  multiForecastPanelCount,
+  multiForecastPanelCountOptions,
   mouseGeo,
+  openMultiMap,
   projectionName,
   projectionOptions,
   refreshToLatest,
@@ -2273,9 +2523,14 @@ const context = {
   saveLayerCombination,
   savedLayerCombinations,
   scrollForecastSlider,
+  setMultiForecastInterval,
+  setMultiForecastPanelCount,
   shiftInitTime,
+  shiftMultiForecastPage,
   selectedLayerLabels,
   selectedLayerTypes,
+  canShiftMultiForecastBackward,
+  canShiftMultiForecastForward,
   SHEAR_COLORS,
   shellRef,
   showFutureVortexTracks,
@@ -2312,6 +2567,31 @@ const context = {
   errorMessage,
   preloading
 }
+
+watch(
+  () => syncState?.zoom,
+  (snapshot) => {
+    if (snapshot?.source === syncId) return
+    applySynchronizedZoom(snapshot)
+  }
+)
+
+watch(
+  () => syncState?.cursor,
+  () => requestDraw()
+)
+
+watch([
+  multiMapMode,
+  initTime,
+  fcHour,
+  level,
+  selectedLayerTypes,
+  multiForecastInterval,
+  multiForecastPanelCount
+], () => {
+  if (multiMapMode.value) openMultiMap(multiMapMode.value)
+}, { deep: true })
 
 watch([fcHour, level], async () => {
   await loadActiveLayer()
@@ -2376,6 +2656,14 @@ onMounted(async () => {
     })
     .on('zoom', (event) => {
       zoomTransform.value = event.transform
+      if (syncState && syncId && !applyingSynchronizedZoom) {
+        syncState.zoom = {
+          x: event.transform.x,
+          y: event.transform.y,
+          k: event.transform.k,
+          source: syncId
+        }
+      }
       const nextTileZoom = getTileZoom(event.transform.k)
       const nextRenderScale = renderScaleForZoom(event.transform.k)
       const tileZoomChanged = selectedLayerHasTiles() && nextTileZoom !== loadedTileZoom
@@ -2391,7 +2679,11 @@ onMounted(async () => {
   d3.select(canvasRef.value).call(zoomBehavior)
   window.addEventListener('keydown', handleDrawKeydown)
   resizeCanvas()
-  applyDefaultView()
+  if (transformFromSync(syncState?.zoom)) {
+    applySynchronizedZoom(syncState.zoom)
+  } else {
+    applyDefaultView()
+  }
   await Promise.all([loadWorld(), loadManifest()])
 })
 

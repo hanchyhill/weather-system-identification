@@ -1,6 +1,6 @@
 <script setup>
 import { Eraser, Pencil } from 'lucide-vue-next'
-import { NPopover } from 'naive-ui'
+import { NPopover, NTooltip } from 'naive-ui'
 import { computed, ref } from 'vue'
 
 import { useWeatherViewContext } from '../context/weatherViewContext'
@@ -49,15 +49,20 @@ function pickErase() {
 <template>
   <n-popover trigger="manual" :show="show" placement="right-start" style="width: 260px;">
     <template #trigger>
-      <button
-        type="button"
-        class="draw-fab"
-        :class="{ 'draw-fab-active': drawMode }"
-        aria-label="绘图工具"
-        @click="toggle"
-      >
-        <Pencil :size="20" />
-      </button>
+      <n-tooltip trigger="hover">
+        <template #trigger>
+          <button
+            type="button"
+            class="draw-fab"
+            :class="{ 'draw-fab-active': drawMode }"
+            aria-label="绘图工具"
+            @click="toggle"
+          >
+            <Pencil :size="20" />
+          </button>
+        </template>
+        绘图工具
+      </n-tooltip>
     </template>
 
     <div class="dtp">

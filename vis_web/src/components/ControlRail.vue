@@ -38,8 +38,6 @@ const {
   level,
   levelOptions,
   loadingState,
-  projectionName,
-  projectionOptions,
   refreshToLatest,
   saveLayerCombination,
   savedLayerCombinations,
@@ -74,7 +72,6 @@ const {
   vortexTrackMinWindSpeed
 } = useWeatherViewContext()
 
-const visibleProjectionOptions = projectionOptions.filter((option) => option.value !== 'lambert')
 </script>
 
 <template>
@@ -188,20 +185,6 @@ const visibleProjectionOptions = projectionOptions.filter((option) => option.val
         </n-popover>
       </div>
       <p class="selection-summary">{{ selectedLayerLabels }}</p>
-    </section>
-
-    <section class="control-section">
-      <label>投影</label>
-      <div class="segmented">
-        <button
-          v-for="option in visibleProjectionOptions"
-          :key="option.value"
-          :class="{ active: projectionName === option.value }"
-          @click="projectionName = option.value"
-        >
-          {{ option.label }}
-        </button>
-      </div>
     </section>
 
     <section class="switch-list">
