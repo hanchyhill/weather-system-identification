@@ -391,6 +391,27 @@ input {
   min-height: 0;
 }
 
+.multi-time-selector-anchor {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 5;
+}
+
+.drawing-toolbar-anchor {
+  position: absolute;
+  top: 62px;
+  left: 14px;
+  z-index: 5;
+}
+
+.element-selector-anchor {
+  position: absolute;
+  top: 110px;
+  left: 14px;
+  z-index: 5;
+}
+
 canvas {
   display: block;
   cursor: grab;
@@ -427,7 +448,7 @@ canvas:active {
 .preload-indicator {
   position: absolute;
   top: 14px;
-  left: 14px;
+  right: 14px;
   display: flex;
   align-items: center;
   gap: 8px;

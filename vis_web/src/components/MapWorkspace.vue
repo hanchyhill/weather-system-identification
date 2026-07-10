@@ -9,15 +9,24 @@ import VueSlider from 'vue-slider-component'
 import 'vue-slider-component/theme/default.css'
 
 import { useWeatherViewContext } from '../context/weatherViewContext'
+import MultiTimeSelector from './MultiTimeSelector.vue'
+import DrawingToolbar from './DrawingToolbar.vue'
+import ElementSelector from './ElementSelector.vue'
 
 const {
   canvasRef,
   changeFcHour,
+  drawMode,
   fcHour,
   fcHourIndex,
   forecastValidTimeLabel,
   formatNumber,
   getSliderTooltip,
+  handleCanvasClick,
+  handleCanvasContextMenu,
+  handleCanvasDblClick,
+  handleCanvasPointerDown,
+  handleCanvasPointerUp,
   handleMouseLeave,
   handleMouseMove,
   hoverJetLine,
@@ -97,9 +106,27 @@ const {
     <div ref="shellRef" class="canvas-shell">
       <canvas
         ref="canvasRef"
+        :style="{ cursor: drawMode ? 'crosshair' : '' }"
         @mousemove="handleMouseMove"
         @mouseleave="handleMouseLeave"
+        @mousedown="handleCanvasPointerDown"
+        @mouseup="handleCanvasPointerUp"
+        @click="handleCanvasClick"
+        @dblclick="handleCanvasDblClick"
+        @contextmenu="handleCanvasContextMenu"
       />
+
+      <div class="multi-time-selector-anchor">
+        <MultiTimeSelector />
+      </div>
+
+      <div class="drawing-toolbar-anchor">
+        <DrawingToolbar />
+      </div>
+
+      <div class="element-selector-anchor">
+        <ElementSelector />
+      </div>
 
       <div v-if="mouseGeo" class="coordinate-readout">
         {{ formatNumber(mouseGeo.lon, 3) }}E,

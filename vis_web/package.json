@@ -13,6 +13,7 @@
     "d3": "latest",
     "d3-geo": "latest",
     "d3-zoom": "latest",
+    "dayjs": "^1.11.21",
     "lucide-vue-next": "latest",
     "naive-ui": "latest",
     "pinia": "latest",

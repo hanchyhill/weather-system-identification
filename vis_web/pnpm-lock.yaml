@@ -10,7 +10,7 @@ importers:
     dependencies:
       '@vitejs/plugin-vue':
         specifier: latest
-        version: 6.0.7(vite@8.1.0)(vue@3.5.39)
+        version: 6.0.7(vite@8.1.3)(vue@3.5.39)
       d3:
         specifier: latest
         version: 7.9.0
@@ -20,6 +20,9 @@ importers:
       d3-zoom:
         specifier: latest
         version: 3.0.0
+      dayjs:
+        specifier: ^1.11.21
+        version: 1.11.21
       lucide-vue-next:
         specifier: latest
         version: 1.0.0(vue@3.5.39)
@@ -34,7 +37,7 @@ importers:
         version: 3.1.0
       vite:
         specifier: latest
-        version: 8.1.0
+        version: 8.1.3
       vue:
         specifier: latest
         version: 3.5.39
@@ -411,6 +414,9 @@ packages:
   date-fns@4.4.0:
     resolution: {integrity: sha512-+1UMbeh68lH1SegH83CGWwpb6OHHbpSgr3+s5Eww5M4CAgswBpoWS0AjTOfEJ33HiYKz1hdj/KTFprzXHmq/6w==}
 
+  dayjs@1.11.21:
+    resolution: {integrity: sha512-98IT+HOahAisibz/yjKbzuOBwYcjJ7BCLPzARyHiyEBmRz4fatF+KPJszEHXsGYjUG234aH/cOjW1wwTbKUZlA==}
+
   delaunator@5.1.0:
     resolution: {integrity: sha512-AGrQ4QSgssa1NGmWmLPqN5NY2KajF5MqxetNEO+o0n3ZwZZeTmt7bBnvzHWrmkZFxGgr4HdyFgelzgi06otLuQ==}
 
@@ -638,8 +644,8 @@ packages:
     peerDependencies:
       vue: ^3.0.11
 
-  vite@8.1.0:
-    resolution: {integrity: sha512-BuJcQK/56NQTWDGn4ABea3q4SSBdNPWwNZKTkkUpcMPnLoquSYH8llRtSUIgoL1KSCpHt5eghLShn50mH36y7Q==}
+  vite@8.1.3:
+    resolution: {integrity: sha512-Ds+gBRbj0lwRO2Y5hwnUBdxSwlAve9LeRyU4sNnAr0ewW0gWF0n5bgXgUzbgZ49MV9BVUAQUFYVcDUcilUExMA==}
     engines: {node: ^20.19.0 || >=22.12.0}
     hasBin: true
     peerDependencies:
@@ -818,10 +824,10 @@ snapshots:
 
   '@types/lodash@4.17.24': {}
 
-  '@vitejs/plugin-vue@6.0.7(vite@8.1.0)(vue@3.5.39)':
+  '@vitejs/plugin-vue@6.0.7(vite@8.1.3)(vue@3.5.39)':
     dependencies:
       '@rolldown/pluginutils': 1.0.1
-      vite: 8.1.0
+      vite: 8.1.3
       vue: 3.5.39
 
   '@vue/compiler-core@3.5.39':
@@ -1075,6 +1081,8 @@ snapshots:
 
   date-fns@4.4.0: {}
 
+  dayjs@1.11.21: {}
+
   delaunator@5.1.0:
     dependencies:
       robust-predicates: 3.0.3
@@ -1268,7 +1276,7 @@ snapshots:
       evtd: 0.2.4
       vue: 3.5.39
 
-  vite@8.1.0:
+  vite@8.1.3:
     dependencies:
       lightningcss: 1.32.0
       picomatch: 4.0.4

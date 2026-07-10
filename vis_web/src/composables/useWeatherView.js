@@ -5,6 +5,14 @@ import { feature } from 'topojson-client'
 import worldTopo from '../source/110m.json'
 import chinaTopo from '../source/bou2_4l.topo.simplify.json'
 import { SvgImageCache } from '../utils/indexedDBCache'
+import { drawShape, catmullRom } from '../utils/mapDrawing'
+import {
+  LAYER_TYPE_OPTIONS,
+  cellKey,
+  defaultElementConfig,
+  loadElementConfig,
+  persistElementConfig
+} from '../utils/elementSelectorConfig'
 
 export function useWeatherView() {
 
@@ -93,6 +101,44 @@ const shellRef = ref(null)
 const canvasSize = reactive({ width: 960, height: 640 })
 const zoomTransform = ref(d3.zoomIdentity)
 const projectionName = ref('equirectangular')
+
+// —— 手绘图形（多常用天气图元）——
+// 每个图形以经纬度存储，随地图平移缩放。kind：line/box/point；render 决定样式。
+const DRAW_TOOLS = [
+  // 几何图形类
+  { key: 'ellipse-blue', label: '蓝色椭圆', group: 'geom', kind: 'box', render: 'ellipse', color: '#2563eb' },
+  { key: 'ellipse-red', label: '红色椭圆', group: 'geom', kind: 'box', render: 'ellipse', color: '#dc2626' },
+  { key: 'rect-blue', label: '蓝色矩形', group: 'geom', kind: 'box', render: 'rect', color: '#2563eb' },
+  { key: 'rect-red', label: '红色矩形', group: 'geom', kind: 'box', render: 'rect', color: '#dc2626' },
+  // 线类型
+  { key: 'trough', label: '槽线', group: 'line', kind: 'line', render: 'trough', color: '#8b5e3c' },
+  { key: 'shear', label: '切变线', group: 'line', kind: 'line', render: 'shear', color: '#dc2626' },
+  { key: 'convergence', label: '辐合线', group: 'line', kind: 'line', render: 'convergence', color: '#111827' },
+  { key: 'arrow-red', label: '红色箭头线', group: 'line', kind: 'line', render: 'arrow', color: '#dc2626' },
+  { key: 'arrow-blue', label: '蓝色箭头线', group: 'line', kind: 'line', render: 'arrow', color: '#2563eb' },
+  { key: 'block-arrow-red', label: '红色粗箭头线', group: 'line', kind: 'line', render: 'block-arrow', color: '#dc2626' },
+  { key: 'block-arrow-blue', label: '蓝色粗箭头线', group: 'line', kind: 'line', render: 'block-arrow', color: '#2563eb' },
+  { key: 'cold-front', label: '冷锋', group: 'line', kind: 'line', render: 'cold', color: '#2563eb' },
+  { key: 'warm-front', label: '暖锋', group: 'line', kind: 'line', render: 'warm', color: '#dc2626' },
+  // 标注类
+  { key: 'label-L', label: 'L（红）', group: 'label', kind: 'point', render: 'text', text: 'L', color: '#dc2626' },
+  { key: 'label-D', label: 'D（红）', group: 'label', kind: 'point', render: 'text', text: 'D', color: '#dc2626' },
+  { key: 'label-H', label: 'H（蓝）', group: 'label', kind: 'point', render: 'text', text: 'H', color: '#2563eb' },
+  { key: 'label-G', label: 'G（蓝）', group: 'label', kind: 'point', render: 'text', text: 'G', color: '#2563eb' },
+  { key: 'thunderstorm', label: '雷暴标记', group: 'label', kind: 'point', render: 'text', text: '☈', color: '#dc2626' },
+  { key: 'typhoon', label: '台风标记', group: 'label', kind: 'point', render: 'text', text: '🌀', color: '#dc2626' },
+  // 工具：删除
+  { key: 'erase', label: '删除图形', group: 'tool', kind: 'erase', color: '#ef4444' }
+]
+const drawMode = ref(false)
+const activeDrawTool = ref(null)
+const drawings = ref([])
+const draftPoints = ref([])
+const draftCursor = ref(null)
+const hoverDeleteIndex = ref(-1)
+let boxStartGeo = null
+let boxDragging = false
+let drawSeq = 0
 const initTime = ref(DEFAULT_INIT_TIME)
 const fcHour = ref('000')
 const level = ref('850')
@@ -105,6 +151,9 @@ const selectedLayerTypes = ref(['wind_barb'])
 const layerCombinationName = ref('默认天气图')
 const activeLayerCombinationName = ref('默认天气图')
 const savedLayerCombinations = ref(loadSavedLayerCombinations())
+// 元素选择器（要素表格）配置与当前选中标识。
+const elementConfig = ref(loadElementConfig())
+const activeElementKey = ref('')
 const troughData = ref(null)
 const jetData = ref(null)
 const vortexCenters = ref([])
@@ -427,6 +476,20 @@ function refreshToLatest() {
   loadManifest()
 }
 
+// 多时次选择器：同时指定起报时次与预报时效并重新加载。
+// 先同步更新 fcHour 与 initTime（界面即时反映），loadManifest 会在获取到
+// 新起报的 manifest 后按已设好的 fcHour 加载对应要素/天气系统数据。
+function applyInitAndFcHour(initTimeStr, fcHourStr) {
+  const nextInitTime = String(initTimeStr || '').trim()
+  if (!parseInitTime(nextInitTime)) return
+
+  if (fcHourStr != null && fcHourStr !== '') {
+    fcHour.value = normalizeFcHour(fcHourStr)
+  }
+  initTime.value = nextInitTime
+  loadManifest()
+}
+
 function formatForecastValidTime(index, includeMonth = true) {
   const date = forecastValidDate(index)
   if (!date) {
@@ -707,6 +770,128 @@ function handleLayerTypeChange(value) {
   setSelectedLayerTypes([value])
   activeLayerCombinationName.value = layerLabel(value)
   layerCombinationName.value = layerLabel(value)
+  activeElementKey.value = ''
+}
+
+// 应用一个「要素」：切换层次并设置图层组合。id 用于在选择器中高亮当前项。
+function applyElementSelection(element, id) {
+  if (!element) return
+  const nextLevel = String(element.level || '')
+  if (nextLevel) level.value = nextLevel
+
+  const layers = Array.isArray(element.layers) ? element.layers : []
+  if (layers.length) {
+    const next = setSelectedLayerTypes(layers)
+    layerType.value = next[0] || layerType.value
+  }
+  activeLayerCombinationName.value = element.label || activeLayerCombinationName.value
+  layerCombinationName.value = element.label || layerCombinationName.value
+  activeElementKey.value = id || ''
+}
+
+// —— 元素选择器配置的增删改（供配置界面调用），改动后立即持久化 —— //
+function commitElementConfig(nextConfig) {
+  elementConfig.value = nextConfig
+  persistElementConfig(nextConfig)
+}
+
+function cloneElementConfig() {
+  return JSON.parse(JSON.stringify(elementConfig.value))
+}
+
+// 设置某个单元格（层次×列）的要素列表。
+function setCellElements(levelValue, columnKey, elements) {
+  const next = cloneElementConfig()
+  const key = cellKey(levelValue, columnKey)
+  const list = (elements || [])
+    .map((el) => ({
+      label: String(el.label || '').trim(),
+      level: String(el.level || levelValue),
+      layers: Array.isArray(el.layers) ? el.layers.map(String).filter(Boolean) : []
+    }))
+    .filter((el) => el.label)
+  if (list.length) next.cells[key] = list
+  else delete next.cells[key]
+  commitElementConfig(next)
+}
+
+// 新增 / 删除垂直层次行。
+function addElementLevel(levelDef) {
+  const value = String(levelDef?.value || '').trim()
+  if (!value) return
+  const next = cloneElementConfig()
+  if (next.levels.some((lvl) => lvl.value === value)) return
+  next.levels.push({ value, label: String(levelDef.label || value) })
+  commitElementConfig(next)
+}
+
+function removeElementLevel(levelValue) {
+  const next = cloneElementConfig()
+  next.levels = next.levels.filter((lvl) => lvl.value !== levelValue)
+  Object.keys(next.cells).forEach((key) => {
+    if (key.startsWith(`${levelValue}|`)) delete next.cells[key]
+  })
+  commitElementConfig(next)
+}
+
+// 新增 / 删除单层要素分组集合。
+function addSingleLayerGroup(group) {
+  const key = String(group?.key || '').trim()
+  const title = String(group?.title || '').trim()
+  if (!title) return
+  const next = cloneElementConfig()
+  const finalKey = key || `group_${next.singleLayerGroups.length + 1}`
+  next.singleLayerGroups.push({
+    key: finalKey,
+    title,
+    color: String(group.color || '#e2e8f0'),
+    elements: []
+  })
+  commitElementConfig(next)
+}
+
+function removeSingleLayerGroup(groupKey) {
+  const next = cloneElementConfig()
+  next.singleLayerGroups = next.singleLayerGroups.filter((group) => group.key !== groupKey)
+  commitElementConfig(next)
+}
+
+// 设置某个单层分组的要素列表。
+function setSingleLayerGroupElements(groupKey, elements) {
+  const next = cloneElementConfig()
+  const group = next.singleLayerGroups.find((item) => item.key === groupKey)
+  if (!group) return
+  group.elements = (elements || [])
+    .map((el) => ({
+      label: String(el.label || '').trim(),
+      level: String(el.level || 'surface'),
+      layers: Array.isArray(el.layers) ? el.layers.map(String).filter(Boolean) : []
+    }))
+    .filter((el) => el.label)
+  commitElementConfig(next)
+}
+
+function resetElementConfig() {
+  commitElementConfig(defaultElementConfig())
+}
+
+// 拖拽排序：垂直层次 / 单层要素集合。
+function reorderElementLevels(fromIndex, toIndex) {
+  if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) return
+  const next = cloneElementConfig()
+  if (fromIndex >= next.levels.length || toIndex >= next.levels.length) return
+  const [moved] = next.levels.splice(fromIndex, 1)
+  next.levels.splice(toIndex, 0, moved)
+  commitElementConfig(next)
+}
+
+function reorderSingleLayerGroups(fromIndex, toIndex) {
+  if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) return
+  const next = cloneElementConfig()
+  if (fromIndex >= next.singleLayerGroups.length || toIndex >= next.singleLayerGroups.length) return
+  const [moved] = next.singleLayerGroups.splice(fromIndex, 1)
+  next.singleLayerGroups.splice(toIndex, 0, moved)
+  commitElementConfig(next)
 }
 
 function buildProjection() {
@@ -813,6 +998,7 @@ function drawMap() {
   drawJetAxes(context, projection)
   drawVortexTracks(context, projection)
   drawVortexCenters(context, projection)
+  drawDrawings(context, projection)
   drawTileDebug(context, projection)
 
   context.restore()
@@ -1714,6 +1900,14 @@ function resetView() {
 }
 
 function handleMouseMove(event) {
+  if (drawMode.value) {
+    draftCursor.value = screenToGeo(event)
+    hoverDeleteIndex.value = getDrawTool(activeDrawTool.value)?.kind === 'erase'
+      ? findShapeIndexNear(event)
+      : -1
+    requestDraw()
+    return
+  }
   mouseGeo.value = screenToGeo(event)
   hoverVortexCenter.value = findNearestVortexCenter(mouseGeo.value)
   hoverVortexTrack.value = hoverVortexCenter.value ? null : findNearestVortexTrack(mouseGeo.value)
@@ -1722,6 +1916,12 @@ function handleMouseMove(event) {
 }
 
 function handleMouseLeave() {
+  if (drawMode.value) {
+    draftCursor.value = null
+    hoverDeleteIndex.value = -1
+    requestDraw()
+    return
+  }
   clearHoverState()
 }
 
@@ -1742,13 +1942,288 @@ function resizeCanvas() {
   requestDraw()
 }
 
+// —— 绘图：状态操作 ——
+function getDrawTool(key) {
+  return DRAW_TOOLS.find((tool) => tool.key === key) || null
+}
+
+function setDrawTool(key) {
+  if (activeDrawTool.value === key) {
+    exitDrawMode()
+    return
+  }
+  finishCurrentLine()
+  activeDrawTool.value = key
+  drawMode.value = true
+  draftPoints.value = []
+  draftCursor.value = null
+  hoverDeleteIndex.value = -1
+}
+
+function exitDrawMode() {
+  finishCurrentLine()
+  drawMode.value = false
+  activeDrawTool.value = null
+  draftPoints.value = []
+  draftCursor.value = null
+  hoverDeleteIndex.value = -1
+  boxStartGeo = null
+  boxDragging = false
+  requestDraw()
+}
+
+function commitShape(tool, points) {
+  drawings.value.push({
+    id: `${tool.key}-${drawSeq++}`,
+    tool: tool.key,
+    kind: tool.kind,
+    render: tool.render,
+    text: tool.text,
+    color: tool.color,
+    points
+  })
+  requestDraw()
+}
+
+// 两个经纬度点是否近似重合（用于剔除双击结束时产生的重复折点）。
+function geoAlmostEqual(a, b) {
+  return Math.abs(a[0] - b[0]) < 1e-6 && Math.abs(a[1] - b[1]) < 1e-6
+}
+
+// 提交当前正在绘制的线（点数≥2 时）。
+function finishCurrentLine() {
+  const tool = getDrawTool(activeDrawTool.value)
+  if (tool && tool.kind === 'line') {
+    const pts = draftPoints.value.map((point) => point.slice())
+    // 去除尾部因双击/回车产生的重复折点。
+    while (pts.length >= 2 && geoAlmostEqual(pts[pts.length - 1], pts[pts.length - 2])) pts.pop()
+    if (pts.length >= 2) commitShape(tool, pts)
+  }
+  draftPoints.value = []
+  draftCursor.value = null
+}
+
+function undoDrawing() {
+  if (draftPoints.value.length) {
+    draftPoints.value.pop()
+  } else {
+    drawings.value.pop()
+  }
+  requestDraw()
+}
+
+function clearDrawings() {
+  drawings.value = []
+  draftPoints.value = []
+  draftCursor.value = null
+  requestDraw()
+}
+
+// —— 绘图：图形删除（屏幕坐标下的就近命中）——
+function pointSegmentDistance(px, py, a, b) {
+  const dx = b[0] - a[0]
+  const dy = b[1] - a[1]
+  const lenSq = dx * dx + dy * dy
+  let t = lenSq ? ((px - a[0]) * dx + (py - a[1]) * dy) / lenSq : 0
+  t = Math.max(0, Math.min(1, t))
+  return Math.hypot(px - (a[0] + t * dx), py - (a[1] + t * dy))
+}
+
+function rectBorderDistance(a, b, px, py) {
+  const x0 = Math.min(a[0], b[0])
+  const x1 = Math.max(a[0], b[0])
+  const y0 = Math.min(a[1], b[1])
+  const y1 = Math.max(a[1], b[1])
+  return Math.min(
+    pointSegmentDistance(px, py, [x0, y0], [x1, y0]),
+    pointSegmentDistance(px, py, [x1, y0], [x1, y1]),
+    pointSegmentDistance(px, py, [x1, y1], [x0, y1]),
+    pointSegmentDistance(px, py, [x0, y1], [x0, y0])
+  )
+}
+
+function shapeScreenDistance(shape, scr, px, py) {
+  const pts = scr.filter((p) => p && Number.isFinite(p[0]) && Number.isFinite(p[1]))
+  if (shape.kind === 'point') {
+    return pts[0] ? Math.hypot(pts[0][0] - px, pts[0][1] - py) : null
+  }
+  if (shape.kind === 'box') {
+    return pts.length >= 2 ? rectBorderDistance(pts[0], pts[1], px, py) : null
+  }
+  if (pts.length < 2) return null
+  const smooth = catmullRom(pts, 1, 12)
+  let min = Infinity
+  for (let i = 0; i < smooth.length - 1; i++) {
+    min = Math.min(min, pointSegmentDistance(px, py, smooth[i], smooth[i + 1]))
+  }
+  return min
+}
+
+function findShapeIndexNear(event) {
+  const canvas = canvasRef.value
+  if (!canvas) return -1
+  const rect = canvas.getBoundingClientRect()
+  const px = event.clientX - rect.left
+  const py = event.clientY - rect.top
+  const projection = buildProjection()
+  const threshold = 12
+  let bestIdx = -1
+  let bestDist = threshold
+  drawings.value.forEach((shape, idx) => {
+    const scr = shape.points.map((point) => transformedPoint(projection, point))
+    const dist = shapeScreenDistance(shape, scr, px, py)
+    if (dist != null && dist < bestDist) {
+      bestDist = dist
+      bestIdx = idx
+    }
+  })
+  return bestIdx
+}
+
+function deleteShapeNear(event) {
+  const idx = findShapeIndexNear(event)
+  if (idx >= 0) {
+    drawings.value.splice(idx, 1)
+    hoverDeleteIndex.value = -1
+    requestDraw()
+  }
+}
+
+// —— 绘图：画布鼠标事件 ——
+function handleCanvasPointerDown(event) {
+  if (!drawMode.value) return
+  const tool = getDrawTool(activeDrawTool.value)
+  if (!tool || tool.kind !== 'box') return
+  const geo = screenToGeo(event)
+  if (!geo) return
+  boxStartGeo = geo
+  boxDragging = true
+  draftCursor.value = geo
+  requestDraw()
+}
+
+function handleCanvasPointerUp(event) {
+  if (!drawMode.value || !boxDragging) return
+  const tool = getDrawTool(activeDrawTool.value)
+  boxDragging = false
+  const geo = screenToGeo(event) || draftCursor.value
+  if (tool && tool.kind === 'box' && boxStartGeo && geo &&
+    (Math.abs(geo.lon - boxStartGeo.lon) > 1e-4 || Math.abs(geo.lat - boxStartGeo.lat) > 1e-4)) {
+    commitShape(tool, [[boxStartGeo.lon, boxStartGeo.lat], [geo.lon, geo.lat]])
+  }
+  boxStartGeo = null
+  draftCursor.value = null
+  requestDraw()
+}
+
+function handleCanvasClick(event) {
+  if (!drawMode.value) return
+  const tool = getDrawTool(activeDrawTool.value)
+  if (!tool) return
+  if (tool.kind === 'erase') {
+    deleteShapeNear(event)
+    return
+  }
+  const geo = screenToGeo(event)
+  if (!geo) return
+  if (tool.kind === 'point') {
+    commitShape(tool, [[geo.lon, geo.lat]])
+  } else if (tool.kind === 'line') {
+    draftPoints.value.push([geo.lon, geo.lat])
+    requestDraw()
+  }
+}
+
+// 双击左键：结束当前线绘制。
+function handleCanvasDblClick(event) {
+  if (!drawMode.value) return
+  const tool = getDrawTool(activeDrawTool.value)
+  if (tool && tool.kind === 'line') {
+    event.preventDefault()
+    finishCurrentLine()
+    requestDraw()
+  }
+}
+
+// 右键：结束当前线（点数≥2 则提交，否则取消）。
+function handleCanvasContextMenu(event) {
+  if (!drawMode.value) return
+  event.preventDefault()
+  const tool = getDrawTool(activeDrawTool.value)
+  if (tool && tool.kind === 'line') {
+    finishCurrentLine()
+    requestDraw()
+  }
+}
+
+// 键盘：回车结束当前线，Esc 退出绘图模式。
+function handleDrawKeydown(event) {
+  if (!drawMode.value) return
+  if (event.key === 'Enter') {
+    finishCurrentLine()
+    requestDraw()
+  } else if (event.key === 'Escape') {
+    exitDrawMode()
+  }
+}
+
+// —— 绘图：渲染（在已应用 zoomTransform 的 context 中）——
+function drawDrawings(context, projection) {
+  const k = zoomTransform.value.k
+  try {
+    const eraseActive = drawMode.value && activeDrawTool.value === 'erase'
+    drawings.value.forEach((shape, idx) => {
+      const proj = shape.points.map((point) => projection(point))
+      drawShape(context, shape, proj, k, false, eraseActive && idx === hoverDeleteIndex.value)
+    })
+    if (!drawMode.value) return
+    const tool = getDrawTool(activeDrawTool.value)
+    if (!tool) return
+    if (tool.kind === 'line' && draftPoints.value.length) {
+      const pts = draftPoints.value.slice()
+      if (draftCursor.value) pts.push([draftCursor.value.lon, draftCursor.value.lat])
+      const proj = pts.map((point) => projection(point))
+      drawShape(context, { kind: 'line', render: tool.render, color: tool.color }, proj, k, true)
+    } else if (tool.kind === 'box' && boxDragging && boxStartGeo && draftCursor.value) {
+      const proj = [
+        projection([boxStartGeo.lon, boxStartGeo.lat]),
+        projection([draftCursor.value.lon, draftCursor.value.lat])
+      ]
+      drawShape(context, { kind: 'box', render: tool.render, color: tool.color }, proj, k, false)
+    }
+  } catch (error) {
+    // 绘图渲染异常不应影响整幅地图的绘制与交互。
+    console.warn('绘制手绘图形失败：', error)
+  }
+}
+
+const hasDrawings = computed(() => drawings.value.length > 0 || draftPoints.value.length > 0)
+const draftPointCount = computed(() => draftPoints.value.length)
+
 const context = {
   activeSystemTab,
+  applyInitAndFcHour,
+  DEFAULT_FC_HOURS,
   canvasRef,
   changeFcHour,
   fcHour,
   fcHourIndex,
   fcHourOptions,
+  DRAW_TOOLS,
+  drawMode,
+  activeDrawTool,
+  setDrawTool,
+  exitDrawMode,
+  finishCurrentLine,
+  undoDrawing,
+  clearDrawings,
+  hasDrawings,
+  draftPointCount,
+  handleCanvasPointerDown,
+  handleCanvasPointerUp,
+  handleCanvasClick,
+  handleCanvasDblClick,
+  handleCanvasContextMenu,
   forecastValidTimeLabel,
   formatNumber,
   getSliderTooltip,
@@ -1768,6 +2243,19 @@ const context = {
   activeLayerCombinationName,
   applyLayerCombination,
   deleteLayerCombination,
+  elementConfig,
+  activeElementKey,
+  applyElementSelection,
+  setCellElements,
+  addElementLevel,
+  removeElementLevel,
+  addSingleLayerGroup,
+  removeSingleLayerGroup,
+  setSingleLayerGroupElements,
+  resetElementConfig,
+  reorderElementLevels,
+  reorderSingleLayerGroups,
+  elementLayerTypeOptions: LAYER_TYPE_OPTIONS,
   layerOptions,
   layerCombinationName,
   layerCombinationOptions,
@@ -1881,6 +2369,11 @@ onMounted(async () => {
 
   zoomBehavior = d3.zoom()
     .scaleExtent([0.6, 40])
+    .filter((event) => {
+      // 绘图模式下屏蔽鼠标拖拽/双击引发的平移与缩放，仅保留滚轮缩放，避免与绘图冲突。
+      if (drawMode.value && event.type !== 'wheel') return false
+      return (!event.ctrlKey || event.type === 'wheel') && !event.button
+    })
     .on('zoom', (event) => {
       zoomTransform.value = event.transform
       const nextTileZoom = getTileZoom(event.transform.k)
@@ -1896,6 +2389,7 @@ onMounted(async () => {
     })
 
   d3.select(canvasRef.value).call(zoomBehavior)
+  window.addEventListener('keydown', handleDrawKeydown)
   resizeCanvas()
   applyDefaultView()
   await Promise.all([loadWorld(), loadManifest()])
@@ -1903,6 +2397,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   resizeObserver?.disconnect()
+  window.removeEventListener('keydown', handleDrawKeydown)
   if (preloadTimer) {
     clearTimeout(preloadTimer)
     preloadTimer = null
