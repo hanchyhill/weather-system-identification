@@ -8,8 +8,14 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { config as loadDotenv } from 'dotenv'
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, '..')
+
+// 从 server/.env 读取配置（无论 cwd 为何都定位到本目录）。
+// dotenv 默认不覆盖已存在的 process.env，因此 pm2/shell 传入的变量优先于 .env。
+loadDotenv({ path: path.join(__dirname, '.env') })
 
 export function defaultOutputRoot() {
   if (process.env.WEATHER_OUTPUT_ROOT) return process.env.WEATHER_OUTPUT_ROOT

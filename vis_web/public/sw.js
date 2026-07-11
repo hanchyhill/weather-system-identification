@@ -25,6 +25,10 @@ const MANIFEST_RE = /\/data\/products\/[^/]+\/manifest\.json$/
 const PREFETCH_CONCURRENCY = 6
 // 存储软上限：占用超过配额的该比例就停止继续预取，避免把用户磁盘塞满
 const STORAGE_SOFT_LIMIT_RATIO = 0.6
+// 默认预取的瓦片层次：只到 z1（z2 数量大，默认不预取）；用户可在订阅弹窗里改
+const DEFAULT_Z_LEVELS = [0, 1]
+// 预取选项在 Cache 里的持久化键（供 push 唤醒时读取——那时页面可能已关闭）
+const OPTIONS_KEY = `${self.location.origin}/__weather_prefetch_options__`
 
 // 当前预取运行的中断令牌；收到新的 prefetch / cancelPrefetch 指令时把旧的置为 aborted
 let prefetchToken = null
@@ -73,6 +77,9 @@ self.addEventListener('message', (event) => {
     startPrefetch(Array.isArray(data.initTimes) ? data.initTimes : [], data.options || {})
   } else if (data.type === 'cancelPrefetch') {
     if (prefetchToken) prefetchToken.aborted = true
+  } else if (data.type === 'setPrefetchOptions') {
+    // 持久化用户的预取策略，供 push 唤醒时读取
+    event.waitUntil(savePrefetchOptions(data.options || {}))
   }
 })
 
@@ -95,7 +102,9 @@ self.addEventListener('push', (event) => {
       data: { initTime }
     })
     if (initTime) {
-      await startPrefetch([initTime], payload.options || {})
+      // 页面可能已关闭，SW 内存里的选项会丢；优先用 payload，其次读持久化的用户策略
+      const options = (payload && payload.options) || (await loadPrefetchOptions())
+      await startPrefetch([initTime], options)
     }
   })())
 })
@@ -167,8 +176,10 @@ async function runPrefetch(initTimes, options, token) {
   }
   if (!manifests.length) return
 
-  // z0 张数少、覆盖广，先灌满；再 z1、z2。单 z 图层只有 z0，多 z 图层才有 z1/z2。
-  for (const z of [0, 1, 2]) {
+  // 按用户选择的瓦片层次分级预取（默认 z0、z1）：z0 张数少覆盖广先灌满，再 z1、z2。
+  // 单 z 图层只有 z0，多 z 图层才有 z1/z2。
+  const zLevels = normalizeZLevels(options.zLevels)
+  for (const z of zLevels) {
     if (token.aborted) return
     if (await overStorageBudget()) return
     const urls = []
@@ -177,6 +188,37 @@ async function runPrefetch(initTimes, options, token) {
     }
     if (urls.length) await prefetchUrls(cache, urls, token)
   }
+}
+
+function normalizeZLevels(zLevels) {
+  if (Array.isArray(zLevels) && zLevels.length) {
+    const cleaned = zLevels.map(Number).filter((z) => z === 0 || z === 1 || z === 2)
+    if (cleaned.length) return [...new Set(cleaned)].sort((a, b) => a - b)
+  }
+  return DEFAULT_Z_LEVELS
+}
+
+async function savePrefetchOptions(options) {
+  try {
+    const cache = await caches.open(TILE_CACHE)
+    await cache.put(
+      OPTIONS_KEY,
+      new Response(JSON.stringify(options || {}), { headers: { 'Content-Type': 'application/json' } })
+    )
+  } catch {
+    // 持久化失败不影响主流程
+  }
+}
+
+async function loadPrefetchOptions() {
+  try {
+    const cache = await caches.open(TILE_CACHE)
+    const res = await cache.match(OPTIONS_KEY)
+    if (res) return await res.json()
+  } catch {
+    // 读取失败回落默认
+  }
+  return {}
 }
 
 function toSet(list) {

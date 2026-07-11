@@ -255,26 +255,31 @@ def _smooth_component_line(
 
 
 def orient_cold_front_line(points: np.ndarray) -> np.ndarray:
-    """Set a stable north-hemisphere cold-front direction.
+    """Set a stable endpoint order from the front's dominant geographic span.
 
-    The shared canvas symbol renderer places cold-front triangles on the left
-    side of a directed line.  Over the project's Northern Hemisphere domain,
-    keeping the first endpoint east of the final endpoint makes the triangle
-    side consistent across forecast times and avoids SVD's arbitrary axis sign
-    from flipping the symbol direction between otherwise similar fronts.
+    The shared canvas renderer uses line direction to choose the side of cold
+    front triangles.  In the Northern Hemisphere, zonal fronts are directed
+    east-to-west and meridional fronts north-to-south.  The Southern Hemisphere
+    uses the reverse direction for both cases.  This makes the result robust to
+    the arbitrary sign returned by the principal-axis ordering step.
     """
     if len(points) < 2:
         return points
-    start_lon = float(points[0, 1])
-    end_lon = float(points[-1, 1])
     mean_lat = float(np.mean(points[:, 0]))
-    if mean_lat >= 0:
-        if start_lon < end_lon:
+    north_hemisphere = mean_lat >= 0
+    east_west_dominant = np.ptp(points[:, 1]) >= np.ptp(points[:, 0])
+
+    if east_west_dominant:
+        # Northern Hemisphere: east -> west. Southern Hemisphere: west -> east.
+        expected_start_is_east = north_hemisphere
+        start_is_east = points[0, 1] >= points[-1, 1]
+        if start_is_east != expected_start_is_east:
             return points[::-1].copy()
-        if np.isclose(start_lon, end_lon) and points[0, 0] < points[-1, 0]:
-            # A nearly meridional front has no east/west endpoint distinction.
-            # North-to-south is the deterministic fallback that keeps markers
-            # on its eastern (warm) side with the shared canvas renderer.
+    else:
+        # Northern Hemisphere: north -> south. Southern Hemisphere: south -> north.
+        expected_start_is_north = north_hemisphere
+        start_is_north = points[0, 0] >= points[-1, 0]
+        if start_is_north != expected_start_is_north:
             return points[::-1].copy()
     return points
 

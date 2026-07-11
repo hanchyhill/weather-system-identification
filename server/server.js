@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import express from 'express'
 
 import { serverPort, vapidKeysPath } from './config.js'
-import { addSubscription, removeSubscription } from './subscriptionStore.js'
+import { addSubscription, listSubscriptions, removeSubscription } from './subscriptionStore.js'
 
 const app = express()
 app.use(express.json({ limit: '32kb' }))
@@ -23,6 +23,10 @@ function loadPublicKey() {
     return null
   }
 }
+
+app.get('/api/push/health', (req, res) => {
+  res.json({ ok: true, vapidConfigured: loadPublicKey() !== null, subscriptions: listSubscriptions().length })
+})
 
 app.get('/api/push/vapid-public-key', (req, res) => {
   const key = loadPublicKey()

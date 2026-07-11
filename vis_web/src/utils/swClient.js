@@ -41,3 +41,11 @@ export function cancelPrefetch() {
   if (!controller) return
   controller.postMessage({ type: 'cancelPrefetch' })
 }
+
+// 把用户的预取策略下发给 SW 持久化，供 push 唤醒（页面已关闭）时读取。
+export function setPrefetchOptions(options) {
+  const controller = activeController()
+  if (!controller) return false
+  controller.postMessage({ type: 'setPrefetchOptions', options: options || {} })
+  return true
+}

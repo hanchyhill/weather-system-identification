@@ -14,6 +14,7 @@ import {
 } from 'naive-ui'
 
 import { useWeatherViewContext } from '../context/weatherViewContext'
+import PushSubscribeButton from './PushSubscribeButton.vue'
 
 const {
   activeSystemTab,
@@ -79,7 +80,10 @@ const {
 <template>
   <aside class="control-rail">
     <div class="brand-block">
-      <h1>天气系统识别</h1>
+      <div class="brand-heading" style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+        <h1>天气系统识别</h1>
+        <PushSubscribeButton />
+      </div>
       <p>SVG 图层与天气系统交互查看</p>
     </div>
 

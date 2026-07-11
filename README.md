@@ -625,11 +625,12 @@ Node 推送后端，用于在新起报时次就绪时通知用户、后台预热
 
 | 文件 | 作用 |
 | --- | --- |
-| `public/sw.js` | Service Worker：拦截 `/data/products` 下的 `.svg`（cache-first）与 `manifest.json`（network-first）；按 z0→z1→z2 分级预取，受 `navigator.storage` 配额软上限约束、可被新指令中断；内置 `push` / `notificationclick` 处理 |
-| `src/utils/swClient.js` | 注册 SW、下发/取消预取；非安全上下文自动降级 |
+| `public/sw.js` | Service Worker：拦截 `/data/products` 下的 `.svg`（cache-first）与 `manifest.json`（network-first）；按用户所选瓦片层次分级预取（默认 z0 + z1），受 `navigator.storage` 配额软上限约束、可被新指令中断；内置 `push` / `notificationclick` 处理 |
+| `src/utils/swClient.js` | 注册 SW、下发/取消预取、下发预取策略；非安全上下文自动降级 |
 | `src/utils/initTime.js` | `calLatestBaseTime` / `recentInitTimes(2)`，供开页 catch-up 预取用 |
+| `src/utils/prefetchOptions.js` | 预取策略（瓦片层次 / 要素 / 气压层）的本地存储 |
 | `src/utils/pushClient.js` | Web Push 能力检测、通知授权、订阅/退订，与后端交换订阅信息 |
-| `src/components/PushSubscribeButton.vue` | 右上角「订阅实时更新」按钮（不支持 / 被拒 / 已订阅多态） |
+| `src/components/PushSubscribeButton.vue` | ControlRail 顶部的触发按钮 + 弹窗：订阅开关与预取策略设置（瓦片层次、预加载要素、气压层） |
 
 `main.js` 在应用启动及标签页重新可见时，会预取最近两个起报时次（最新 + 上一时次）。
 
@@ -656,23 +657,35 @@ Node 推送后端，用于在新起报时次就绪时通知用户、后台预热
 
 ### 部署与运行
 
-```bash
-# 1. 安装推送后端依赖
-cd server && pnpm install            # express, web-push
+推送后端通过 `server/.env` 统一配置（`server.js` / `pushSchedule.js` / `generateVapidKeys.js`
+均经 `config.js` 读取；pm2/shell 传入的同名变量优先于 `.env`）。
 
-# 2. 生成 VAPID 密钥（先设置真实联系方式，生产写入 pm2 env）
-export WEATHER_VAPID_SUBJECT="mailto:you@your-domain"
-node generateVapidKeys.js            # 写出 <output_root>/push/vapid_keys.json
+```bash
+# 1. 配置 + 安装推送后端依赖
+cd server
+cp .env.example .env                 # 按需修改 WEATHER_VAPID_SUBJECT 等
+pnpm install --prod                  # express, web-push, dotenv
+
+# 2. 生成 VAPID 密钥（幂等，已存在则跳过；--force 可强制重生）
+node generateVapidKeys.js            # 写出 <push_root>/vapid_keys.json
 
 # 3. 本地联调
 node server.js                       # 监听 127.0.0.1:8090
 cd ../vis_web && pnpm dev            # http://localhost:5173，/api 经 vite proxy 转发到 8090
+```
 
-# 4. 前端构建
+**生产上线**：前端 `dist/` 在本地测试环境构建好后上传到服务器，
+`start_weather_business_pm2.sh` **默认不再构建前端**，只校验 `vis_web/dist/` 是否就位、安装
+推送后端依赖、幂等生成 VAPID 密钥，并用 PM2 拉起全部业务进程（含
+`weather-push-server` / `weather-push-schedule`）。
+
+```bash
+# 本地测试环境：构建并上传前端产物
 cd vis_web && pnpm build
+rsync -a vis_web/dist/ user@server:/var/www/html/nwp_weather_system/vis_web/dist/
 
-# 5. 生产：PM2 拉起 weather-push-server 与 weather-push-schedule
-pm2 reload ecosystem.weather-business.config.js
+# 服务器：一键部署（如需在服务器本机构建前端，改用 BUILD_FRONTEND=1 ./start_weather_business_pm2.sh）
+./start_weather_business_pm2.sh
 ```
 
 生产环境需在 nginx（`nginx_nwp.conf`）的 `location /data/` 之后增加反向代理：
@@ -686,6 +699,8 @@ pm2 reload ecosystem.weather-business.config.js
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 ```
+
+健康检查：`GET /api/push/health` 返回 `{ ok, vapidConfigured, subscriptions }`。
 
 ### 相关环境变量
 

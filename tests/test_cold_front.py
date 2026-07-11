@@ -102,6 +102,20 @@ class ColdFrontTests(unittest.TestCase):
 
         np.testing.assert_allclose(oriented, south_to_north[::-1])
 
+    def test_orient_cold_front_line_uses_west_to_east_for_southern_zonal_front(self):
+        east_to_west = np.asarray([[-30.0, 110.0], [-31.0, 100.0]])
+
+        oriented = cold_front.orient_cold_front_line(east_to_west)
+
+        np.testing.assert_allclose(oriented, east_to_west[::-1])
+
+    def test_orient_cold_front_line_uses_south_to_north_for_southern_meridional_front(self):
+        north_to_south = np.asarray([[-20.0, 105.0], [-30.0, 105.0]])
+
+        oriented = cold_front.orient_cold_front_line(north_to_south)
+
+        np.testing.assert_allclose(oriented, north_to_south[::-1])
+
     def test_workflow_skips_existing_json_without_reading_data(self):
         with tempfile.TemporaryDirectory() as tmpdir, patch("cold_front.read_cold_front_fields") as reader:
             output_path = cold_front.cold_front_json_path(tmpdir, "2026071100", "000")

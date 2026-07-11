@@ -20,7 +20,12 @@ function read() {
 function write(subscriptions) {
   const file = subscriptionsPath()
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, JSON.stringify(subscriptions, null, 2), 'utf-8')
+  // 原子写：先写临时文件再 rename，避免并发/中断产生半写的 JSON。
+  // 注意：server 与 push-schedule 是两个进程，极端并发下仍可能后写覆盖先写（丢一条订阅，
+  // 用户重订即可恢复），但不会损坏文件。
+  const tmp = `${file}.tmp`
+  fs.writeFileSync(tmp, JSON.stringify(subscriptions, null, 2), 'utf-8')
+  fs.renameSync(tmp, file)
 }
 
 export function listSubscriptions() {
