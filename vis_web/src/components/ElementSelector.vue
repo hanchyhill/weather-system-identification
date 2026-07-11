@@ -31,11 +31,24 @@ const {
   elementLayerTypeOptions
 } = useWeatherViewContext()
 
+const props = defineProps({
+  activeElementKey: {
+    type: String,
+    default: null
+  },
+  selectionHandler: {
+    type: Function,
+    default: null
+  },
+  headerTrigger: Boolean
+})
+
 const showConfig = ref(false)
 
 const columns = computed(() => elementConfig.value.columns)
 const levels = computed(() => elementConfig.value.levels)
 const singleLayerGroups = computed(() => elementConfig.value.singleLayerGroups)
+const selectedElementKey = computed(() => props.activeElementKey ?? activeElementKey.value)
 
 const layerSelectOptions = elementLayerTypeOptions.map((option) => ({
   label: `${option.label}（${option.value}）`,
@@ -64,11 +77,19 @@ function singleElementId(groupKey, index) {
 }
 
 function pickGrid(levelValue, columnKey, index, element) {
-  applyElementSelection(element, gridElementId(levelValue, columnKey, index))
+  applySelection(element, gridElementId(levelValue, columnKey, index))
 }
 
 function pickSingle(groupKey, index, element) {
-  applyElementSelection(element, singleElementId(groupKey, index))
+  applySelection(element, singleElementId(groupKey, index))
+}
+
+function applySelection(element, elementKey) {
+  if (props.selectionHandler) {
+    props.selectionHandler(element, elementKey)
+    return
+  }
+  applyElementSelection(element, elementKey)
 }
 
 function layerTip(element) {
@@ -164,17 +185,27 @@ function onGroupDrop(toIndex) {
   if (dragGroupIndex.value >= 0) reorderSingleLayerGroups(dragGroupIndex.value, toIndex)
   dragGroupIndex.value = -1
 }
+
+function openConfig() {
+  showConfig.value = true
+}
+
+defineExpose({ openConfig })
 </script>
 
 <template>
   <n-popover
-    trigger="hover"
-    placement="right-start"
+    :trigger="headerTrigger ? 'click' : 'hover'"
+    :placement="headerTrigger ? 'bottom-start' : 'right-start'"
     :show-arrow="false"
-    style="max-width: 96vw; transform: translateY(-110px);"
+    :style="headerTrigger ? 'max-width: 96vw;' : 'max-width: 96vw; transform: translateY(-110px);'"
   >
     <template #trigger>
-      <button type="button" class="es-fab" aria-label="元素选择器">
+      <n-button v-if="headerTrigger" size="small" secondary>
+        <template #icon><LayoutGrid :size="15" /></template>
+        天气要素选择器
+      </n-button>
+      <button v-else type="button" class="es-fab" aria-label="天气要素选择器">
         <LayoutGrid :size="20" />
       </button>
     </template>
@@ -182,7 +213,7 @@ function onGroupDrop(toIndex) {
     <div class="es-popover">
       <div class="es-header">
         <div>
-          <strong>元素选择器</strong>
+          <strong>天气要素选择器</strong>
           <span>左：高空要素（层次 × 要素）；右：单层要素。点击即切换层次与图层组合。</span>
         </div>
         <n-button size="small" secondary @click="showConfig = true">
@@ -217,7 +248,7 @@ function onGroupDrop(toIndex) {
                       :key="index"
                       type="button"
                       class="es-el-btn"
-                      :class="{ 'es-el-active': activeElementKey === gridElementId(lvl.value, col.key, index) }"
+                      :class="{ 'es-el-active': selectedElementKey === gridElementId(lvl.value, col.key, index) }"
                       :title="layerTip(el)"
                       @click="pickGrid(lvl.value, col.key, index, el)"
                     >
@@ -247,7 +278,7 @@ function onGroupDrop(toIndex) {
                   :key="index"
                   type="button"
                   class="es-el-btn"
-                  :class="{ 'es-el-active': activeElementKey === singleElementId(group.key, index) }"
+                  :class="{ 'es-el-active': selectedElementKey === singleElementId(group.key, index) }"
                   :title="layerTip(el)"
                   @click="pickSingle(group.key, index, el)"
                 >
@@ -266,7 +297,7 @@ function onGroupDrop(toIndex) {
   <n-modal
     v-model:show="showConfig"
     preset="card"
-    title="元素选择器配置"
+    title="天气要素选择器配置"
     style="width: 720px; max-width: 94vw;"
   >
     <template #header-extra>

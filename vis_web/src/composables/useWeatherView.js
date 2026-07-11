@@ -63,6 +63,7 @@ const SHEAR_COLORS = reactive({
   shear_v_down: TROUGH_DEFAULT_COLOR
 })
 const LAYER_COMBINATION_STORAGE_KEY = 'weather-view-layer-combinations'
+const MULTI_ELEMENT_CONFIGURATION_STORAGE_KEY = 'weather-view-multi-element-configurations'
 const FILL_LAYER_TYPES = new Set(['wind_speed_fill', 'vort_fill', 'rhum_fill', 'surface_speed_fill'])
 const WIND_OVERLAY_LAYER_TYPES = new Set([
   'wind_quiver',
@@ -168,6 +169,10 @@ const multiInitInterval = ref('12')
 const multiInitPanelCount = ref(4)
 const multiForecastInterval = ref('24')
 const multiForecastPanelCount = ref(4)
+const multiElementPanelCount = ref(4)
+const multiElementConfigurations = ref(loadMultiElementConfigurations())
+const multiElementConfigurationName = ref('配置1')
+const activeMultiElementConfigurationName = ref('')
 const troughData = ref(null)
 const jetData = ref(null)
 const vortexCenters = ref([])
@@ -639,6 +644,7 @@ const multiInitIntervalOptions = [
   { value: '24', label: '24小时' }
 ]
 const multiInitPanelCountOptions = [4, 6, 8, 9]
+const multiElementPanelCountOptions = [4, 6, 8, 9]
 
 function formatInitTime(date) {
   return `${date.getUTCFullYear()}${padTimePart(date.getUTCMonth() + 1)}${padTimePart(date.getUTCDate())}${padTimePart(date.getUTCHours())}`
@@ -717,6 +723,12 @@ function setMultiForecastPanelCount(value) {
   multiForecastPanelCount.value = count
 }
 
+function setMultiElementPanelCount(value) {
+  const count = Number(value)
+  if (!multiElementPanelCountOptions.includes(count)) return
+  multiElementPanelCount.value = count
+}
+
 function shiftMultiForecastPage(direction) {
   if (multiMapMode.value !== 'forecast') return
   const hours = sliderFcHours.value
@@ -756,27 +768,190 @@ const canShiftMultiForecastForward = computed(() => {
   return hours.includes(nextValue)
 })
 
-function multiElementPanels() {
+function normalizeMultiElementDescriptor(element, fallbackLabel = '') {
+  const layers = Array.isArray(element?.layers)
+    ? element.layers
+    : element?.selectedLayerTypes
+  return {
+    label: String(element?.label || element?.title || fallbackLabel).trim() || fallbackLabel,
+    level: String(element?.level || level.value),
+    layers: Array.isArray(layers) ? layers.map(String).filter(Boolean) : [],
+    elementKey: String(element?.elementKey || '')
+  }
+}
+
+function multiElementCandidates() {
   const current = {
     label: activeLayerCombinationName.value || selectedLayerLabels.value,
     level: level.value,
-    layers: [...selectedLayerTypes.value]
+    layers: [...selectedLayerTypes.value],
+    elementKey: activeElementKey.value
   }
   const candidates = [current]
   const seen = new Set([`${current.level}|${current.layers.join(',')}`])
 
-  for (const column of elementConfig.value.columns) {
-    const elements = elementConfig.value.cells[cellKey(level.value, column.key)] || []
+  const addElement = (element) => {
+    const descriptor = normalizeMultiElementDescriptor(element)
+    const key = `${descriptor.level}|${descriptor.layers.join(',')}`
+    if (!descriptor.layers.length || seen.has(key)) return
+    candidates.push(descriptor)
+    seen.add(key)
+  }
+
+  const preferredCells = elementConfig.value.columns.map((column) => (
+    elementConfig.value.cells[cellKey(level.value, column.key)] || []
+  ))
+  const allCells = Object.values(elementConfig.value.cells)
+  const singleLayerElements = elementConfig.value.singleLayerGroups.flatMap((group) => group.elements || [])
+
+  for (const elements of [...preferredCells, ...allCells, singleLayerElements]) {
     for (const element of elements) {
-      const key = `${element.level}|${(element.layers || []).join(',')}`
-      if (!element.layers?.length || seen.has(key)) continue
-      candidates.push(element)
-      seen.add(key)
-      if (candidates.length === 4) return candidates
+      const before = candidates.length
+      addElement(element)
+      if (candidates.length === before) continue
+      if (candidates.length >= multiElementPanelCountOptions[multiElementPanelCountOptions.length - 1]) return candidates
     }
   }
 
   return candidates
+}
+
+function multiElementPanels() {
+  const existing = multiMapMode.value === 'element'
+    ? multiMapPanels.value.map((panel, index) => normalizeMultiElementDescriptor(panel, `配置${index + 1}`))
+    : []
+  const candidates = multiElementCandidates()
+  const descriptors = [...existing]
+
+  for (let index = descriptors.length; index < multiElementPanelCount.value; index += 1) {
+    const fallback = candidates[index % candidates.length] || normalizeMultiElementDescriptor({}, `配置${index + 1}`)
+    descriptors.push({ ...fallback, layers: [...fallback.layers] })
+  }
+
+  return descriptors.slice(0, multiElementPanelCount.value)
+}
+
+function defaultMultiElementPanels() {
+  const candidates = multiElementCandidates()
+  return Array.from({ length: multiElementPanelCount.value }, (_, index) => {
+    const fallback = candidates[index % candidates.length] || normalizeMultiElementDescriptor({}, `配置${index + 1}`)
+    return { ...fallback, layers: [...fallback.layers] }
+  })
+}
+
+function multiElementPanelView(element, index) {
+  const descriptor = normalizeMultiElementDescriptor(element, `配置${index + 1}`)
+  return panelView({
+    id: `element-${initTime.value}-${fcHour.value}-${index}-${descriptor.level}-${descriptor.layers.join('-')}-${descriptor.elementKey}`,
+    title: descriptor.label || `配置${index + 1}`,
+    level: descriptor.level,
+    selectedLayerTypes: [...descriptor.layers],
+    elementKey: descriptor.elementKey
+  })
+}
+
+function updateMultiElementPanel(index, element, elementKey = '') {
+  if (multiMapMode.value !== 'element' || !multiMapPanels.value[index]) return
+  const panels = multiMapPanels.value.map((panel, panelIndex) => (
+    panelIndex === index
+      ? multiElementPanelView({ ...element, elementKey }, panelIndex)
+      : panel
+  ))
+  multiMapPanels.value = panels
+  activeMultiElementConfigurationName.value = ''
+}
+
+function setMultiElementConfigurationName(value) {
+  multiElementConfigurationName.value = String(value || '')
+}
+
+function nextMultiElementConfigurationName() {
+  let index = 1
+  while (multiElementConfigurations.value.some((configuration) => configuration.name === `配置${index}`)) {
+    index += 1
+  }
+  return `配置${index}`
+}
+
+function createMultiElementConfiguration() {
+  multiMapPanels.value = defaultMultiElementPanels().map(multiElementPanelView)
+  multiMapMode.value = 'element'
+  activeMultiElementConfigurationName.value = ''
+  multiElementConfigurationName.value = nextMultiElementConfigurationName()
+}
+
+function loadMultiElementConfigurations() {
+  if (typeof window === 'undefined') return []
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(MULTI_ELEMENT_CONFIGURATION_STORAGE_KEY) || '[]')
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((configuration) => configuration?.name && Array.isArray(configuration.panels))
+      .map((configuration) => ({
+        name: String(configuration.name),
+        panels: configuration.panels.map((panel, index) => normalizeMultiElementDescriptor(panel, `配置${index + 1}`))
+      }))
+      .filter((configuration) => configuration.panels.length)
+  } catch {
+    return []
+  }
+}
+
+function persistMultiElementConfigurations() {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(
+    MULTI_ELEMENT_CONFIGURATION_STORAGE_KEY,
+    JSON.stringify(multiElementConfigurations.value)
+  )
+}
+
+function saveMultiElementConfiguration(nameOverride = '') {
+  if (multiMapMode.value !== 'element' || !multiMapPanels.value.length) return
+  const name = String(nameOverride || multiElementConfigurationName.value).trim() || nextMultiElementConfigurationName()
+  const record = {
+    name,
+    panels: multiMapPanels.value.map((panel, index) => normalizeMultiElementDescriptor(panel, `配置${index + 1}`))
+  }
+  const existingIndex = multiElementConfigurations.value.findIndex((configuration) => configuration.name === name)
+  if (existingIndex >= 0) multiElementConfigurations.value.splice(existingIndex, 1, record)
+  else multiElementConfigurations.value.push(record)
+
+  activeMultiElementConfigurationName.value = name
+  multiElementConfigurationName.value = name
+  persistMultiElementConfigurations()
+}
+
+function renameMultiElementConfiguration(currentName, nextName) {
+  const from = String(currentName || '').trim()
+  const to = String(nextName || '').trim()
+  if (!from || !to || from === to) return false
+  const currentIndex = multiElementConfigurations.value.findIndex((configuration) => configuration.name === from)
+  if (currentIndex < 0 || multiElementConfigurations.value.some((configuration) => configuration.name === to)) return false
+
+  const configuration = multiElementConfigurations.value[currentIndex]
+  multiElementConfigurations.value.splice(currentIndex, 1, { ...configuration, name: to })
+  if (activeMultiElementConfigurationName.value === from) activeMultiElementConfigurationName.value = to
+  if (multiElementConfigurationName.value === from) multiElementConfigurationName.value = to
+  persistMultiElementConfigurations()
+  return true
+}
+
+function applyMultiElementConfiguration(configuration) {
+  if (!configuration?.name || !Array.isArray(configuration.panels) || !configuration.panels.length) return
+  const panels = configuration.panels.map((panel, index) => normalizeMultiElementDescriptor(panel, `配置${index + 1}`))
+  if (multiElementPanelCountOptions.includes(panels.length)) {
+    multiElementPanelCount.value = panels.length
+  }
+  multiMapPanels.value = panels.map(multiElementPanelView)
+  multiMapMode.value = 'element'
+  activeMultiElementConfigurationName.value = configuration.name
+  multiElementConfigurationName.value = configuration.name
+}
+
+function deleteMultiElementConfiguration(name) {
+  multiElementConfigurations.value = multiElementConfigurations.value.filter((configuration) => configuration.name !== name)
+  if (activeMultiElementConfigurationName.value === name) activeMultiElementConfigurationName.value = ''
+  persistMultiElementConfigurations()
 }
 
 function openMultiMap(mode) {
@@ -801,12 +976,7 @@ function openMultiMap(mode) {
       valid
     }))
   } else {
-    multiMapPanels.value = multiElementPanels().map((element, index) => panelView({
-      id: `element-${initTime.value}-${fcHour.value}-${index}-${element.level}-${element.layers.join('-')}`,
-      title: element.label,
-      level: element.level,
-      selectedLayerTypes: [...element.layers]
-    }))
+    multiMapPanels.value = multiElementPanels().map(multiElementPanelView)
   }
 
   multiMapMode.value = mode
@@ -1158,10 +1328,21 @@ function applyDefaultView(animate = false) {
 }
 
 function transformFromSync(snapshot) {
+  const k = Number(snapshot?.k)
+  const center = Array.isArray(snapshot?.center) ? snapshot.center.map(Number) : []
+  if (!Number.isFinite(k)) return null
+
+  if (center.length === 2 && Number.isFinite(center[0]) && Number.isFinite(center[1])) {
+    const projectedCenter = buildProjection()(center)
+    if (!projectedCenter) return null
+    return d3.zoomIdentity
+      .translate((canvasSize.width / 2) - (projectedCenter[0] * k), (canvasSize.height / 2) - (projectedCenter[1] * k))
+      .scale(k)
+  }
+
   const x = Number(snapshot?.x)
   const y = Number(snapshot?.y)
-  const k = Number(snapshot?.k)
-  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(k)) return null
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
   return d3.zoomIdentity.translate(x, y).scale(k)
 }
 
@@ -2208,8 +2389,12 @@ function resizeCanvas() {
   const element = shellRef.value
   if (!element) return
   const rect = element.getBoundingClientRect()
-  canvasSize.width = Math.max(minCanvasWidth, Math.floor(rect.width))
-  canvasSize.height = Math.max(minCanvasHeight, Math.floor(rect.height))
+  const nextWidth = Math.max(minCanvasWidth, Math.floor(rect.width))
+  const nextHeight = Math.max(minCanvasHeight, Math.floor(rect.height))
+  const sizeChanged = canvasSize.width !== nextWidth || canvasSize.height !== nextHeight
+  canvasSize.width = nextWidth
+  canvasSize.height = nextHeight
+  if (sizeChanged && transformFromSync(syncState?.zoom)) applySynchronizedZoom(syncState.zoom)
   requestDraw()
 }
 
@@ -2516,6 +2701,10 @@ const context = {
   activeLayerCombinationName,
   applyLayerCombination,
   deleteLayerCombination,
+  activeMultiElementConfigurationName,
+  applyMultiElementConfiguration,
+  deleteMultiElementConfiguration,
+  createMultiElementConfiguration,
   elementConfig,
   activeElementKey,
   applyElementSelection,
@@ -2549,6 +2738,10 @@ const context = {
   multiForecastIntervalOptions,
   multiForecastPanelCount,
   multiForecastPanelCountOptions,
+  multiElementConfigurationName,
+  multiElementConfigurations,
+  multiElementPanelCount,
+  multiElementPanelCountOptions,
   mouseGeo,
   openMultiMap,
   projectionName,
@@ -2562,10 +2755,15 @@ const context = {
   setMultiInitPanelCount,
   setMultiForecastInterval,
   setMultiForecastPanelCount,
+  setMultiElementConfigurationName,
+  setMultiElementPanelCount,
   shiftInitTime,
   shiftMultiForecastPage,
   selectedLayerLabels,
   selectedLayerTypes,
+  saveMultiElementConfiguration,
+  renameMultiElementConfiguration,
+  updateMultiElementPanel,
   canShiftMultiForecastBackward,
   canShiftMultiForecastForward,
   SHEAR_COLORS,
@@ -2627,7 +2825,8 @@ watch([
   multiInitInterval,
   multiInitPanelCount,
   multiForecastInterval,
-  multiForecastPanelCount
+  multiForecastPanelCount,
+  multiElementPanelCount
 ], () => {
   if (multiMapMode.value) openMultiMap(multiMapMode.value)
 }, { deep: true })
@@ -2696,10 +2895,16 @@ onMounted(async () => {
     .on('zoom', (event) => {
       zoomTransform.value = event.transform
       if (syncState && syncId && !applyingSynchronizedZoom) {
+        const projection = buildProjection()
+        const viewportCenter = event.transform.invert([canvasSize.width / 2, canvasSize.height / 2])
+        const center = projection.invert(viewportCenter)
         syncState.zoom = {
           x: event.transform.x,
           y: event.transform.y,
           k: event.transform.k,
+          center: center && Number.isFinite(center[0]) && Number.isFinite(center[1])
+            ? [center[0], center[1]]
+            : null,
           source: syncId
         }
       }

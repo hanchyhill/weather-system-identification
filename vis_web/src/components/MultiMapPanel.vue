@@ -5,19 +5,28 @@ const props = defineProps({
   panel: {
     type: Object,
     required: true
-  }
+  },
+  active: Boolean
 })
+
+const emit = defineEmits(['activate'])
+
+function activate() {
+  emit('activate')
+}
 </script>
 
 <template>
-  <MultiMapValidPanel v-if="panel.valid" :panel="panel" />
-  <article v-else class="multi-map-invalid-panel">
-    <header>
-      <strong>{{ panel.title }}</strong>
-      <span>该时效无效</span>
-    </header>
-    <div>
-      <span>该时效无效</span>
-    </div>
-  </article>
+  <div class="multi-map-panel" :class="{ 'multi-map-panel-active': active }" @pointerdown="activate">
+    <MultiMapValidPanel v-if="panel.valid" :panel="panel" />
+    <article v-else class="multi-map-invalid-panel">
+      <header>
+        <strong>{{ panel.title }}</strong>
+        <span>该时效无效</span>
+      </header>
+      <div>
+        <span>该时效无效</span>
+      </div>
+    </article>
+  </div>
 </template>
