@@ -446,6 +446,7 @@ input {
 }
 
 .multi-map-heading,
+.multi-map-controls,
 .multi-forecast-controls {
   display: flex;
   align-items: center;
@@ -456,6 +457,25 @@ input {
   flex: 1;
   gap: 14px;
   overflow: hidden;
+}
+
+.multi-map-controls {
+  gap: 12px;
+  overflow-x: auto;
+  padding: 2px 0;
+}
+
+.multi-map-control-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.multi-map-control-group > span {
+  color: #526173;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .multi-forecast-controls {

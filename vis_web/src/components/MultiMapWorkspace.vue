@@ -11,6 +11,10 @@ const {
   canShiftMultiForecastBackward,
   canShiftMultiForecastForward,
   closeMultiMap,
+  multiInitInterval,
+  multiInitIntervalOptions,
+  multiInitPanelCount,
+  multiInitPanelCountOptions,
   multiMapMode,
   multiMapModeOptions,
   multiMapPanels,
@@ -18,6 +22,8 @@ const {
   multiForecastIntervalOptions,
   multiForecastPanelCount,
   multiForecastPanelCountOptions,
+  setMultiInitInterval,
+  setMultiInitPanelCount,
   setMultiForecastInterval,
   setMultiForecastPanelCount,
   shiftMultiForecastPage
@@ -27,6 +33,7 @@ const modeLabel = computed(() => (
   multiMapModeOptions.find((option) => option.value === multiMapMode.value)?.label || '多图模式'
 ))
 const isForecastMode = computed(() => multiMapMode.value === 'forecast')
+const isInitMode = computed(() => multiMapMode.value === 'init')
 const gridStyle = computed(() => {
   const count = multiMapPanels.value.length
   const columns = count === 8 ? 4 : count === 6 || count === 9 ? 3 : 2
@@ -62,6 +69,34 @@ watch(multiMapMode, (mode) => {
     <header class="multi-map-header">
       <div class="multi-map-heading">
         <strong>{{ modeLabel }}</strong>
+        <div v-if="isInitMode" class="multi-map-controls">
+          <div class="multi-map-control-group">
+            <span>起报间隔</span>
+            <n-button-group size="small">
+              <n-button
+                v-for="option in multiInitIntervalOptions"
+                :key="option.value"
+                :type="multiInitInterval === option.value ? 'primary' : 'default'"
+                @click="setMultiInitInterval(option.value)"
+              >
+                {{ option.label }}
+              </n-button>
+            </n-button-group>
+          </div>
+          <div class="multi-map-control-group">
+            <span>子图数量</span>
+            <n-button-group size="small">
+              <n-button
+                v-for="count in multiInitPanelCountOptions"
+                :key="count"
+                :type="multiInitPanelCount === count ? 'primary' : 'default'"
+                @click="setMultiInitPanelCount(count)"
+              >
+                {{ count }} 图
+              </n-button>
+            </n-button-group>
+          </div>
+        </div>
         <div v-if="isForecastMode" class="multi-forecast-controls">
           <n-button-group size="small">
             <n-button

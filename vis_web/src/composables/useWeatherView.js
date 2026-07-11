@@ -164,6 +164,8 @@ const elementConfig = ref(loadElementConfig())
 const activeElementKey = ref('')
 const multiMapMode = ref(null)
 const multiMapPanels = ref([])
+const multiInitInterval = ref('12')
+const multiInitPanelCount = ref(4)
 const multiForecastInterval = ref('24')
 const multiForecastPanelCount = ref(4)
 const troughData = ref(null)
@@ -632,6 +634,11 @@ const multiForecastIntervalOptions = [
   { value: 'continuous', label: '连续' }
 ]
 const multiForecastPanelCountOptions = [4, 6, 8, 9]
+const multiInitIntervalOptions = [
+  { value: '12', label: '12小时' },
+  { value: '24', label: '24小时' }
+]
+const multiInitPanelCountOptions = [4, 6, 8, 9]
 
 function formatInitTime(date) {
   return `${date.getUTCFullYear()}${padTimePart(date.getUTCMonth() + 1)}${padTimePart(date.getUTCDate())}${padTimePart(date.getUTCHours())}`
@@ -674,6 +681,29 @@ function multiForecastDescriptors() {
     const value = normalizeFcHour(startHour + (interval * index))
     return { value, valid: hours.includes(value) }
   })
+}
+
+// 多起报对比保持首图的有效时间不变：每向前一个起报间隔，预报时效同步增加。
+// 例如 2025071012 起报 +000h、12 小时前起报 +012h，均对应 2025071012。
+function multiInitDescriptors() {
+  const interval = Number(multiInitInterval.value)
+  const startFcHour = Number(fcHour.value)
+
+  return Array.from({ length: multiInitPanelCount.value }, (_, index) => ({
+    initTime: shiftedInitTime(initTime.value, -interval * index),
+    fcHour: normalizeFcHour(startFcHour + interval * index)
+  }))
+}
+
+function setMultiInitInterval(value) {
+  if (!multiInitIntervalOptions.some((option) => option.value === value)) return
+  multiInitInterval.value = value
+}
+
+function setMultiInitPanelCount(value) {
+  const count = Number(value)
+  if (!multiInitPanelCountOptions.includes(count)) return
+  multiInitPanelCount.value = count
 }
 
 function setMultiForecastInterval(value) {
@@ -753,12 +783,13 @@ function openMultiMap(mode) {
   if (!multiMapModeOptions.some((option) => option.value === mode)) return
 
   if (mode === 'init') {
-    multiMapPanels.value = [0, -12, -24, -36].map((offsetHours) => {
-      const value = shiftedInitTime(initTime.value, offsetHours)
+    multiMapPanels.value = multiInitDescriptors().map((descriptor, index) => {
+      const { initTime: panelInitTime, fcHour: panelFcHour } = descriptor
       return panelView({
-        id: `init-${value}-${fcHour.value}`,
-        title: `${value} 起报`,
-        initTime: value
+        id: `init-${panelInitTime}-${panelFcHour}-${index}`,
+        title: `${panelInitTime} 起报`,
+        initTime: panelInitTime,
+        fcHour: panelFcHour
       })
     })
   } else if (mode === 'forecast') {
@@ -2510,6 +2541,10 @@ const context = {
   multiMapMode,
   multiMapModeOptions,
   multiMapPanels,
+  multiInitInterval,
+  multiInitIntervalOptions,
+  multiInitPanelCount,
+  multiInitPanelCountOptions,
   multiForecastInterval,
   multiForecastIntervalOptions,
   multiForecastPanelCount,
@@ -2523,6 +2558,8 @@ const context = {
   saveLayerCombination,
   savedLayerCombinations,
   scrollForecastSlider,
+  setMultiInitInterval,
+  setMultiInitPanelCount,
   setMultiForecastInterval,
   setMultiForecastPanelCount,
   shiftInitTime,
@@ -2587,6 +2624,8 @@ watch([
   fcHour,
   level,
   selectedLayerTypes,
+  multiInitInterval,
+  multiInitPanelCount,
   multiForecastInterval,
   multiForecastPanelCount
 ], () => {
