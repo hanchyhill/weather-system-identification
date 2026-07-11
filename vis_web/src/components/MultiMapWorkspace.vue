@@ -16,6 +16,10 @@ const {
   applyMultiElementConfiguration,
   createMultiElementConfiguration,
   deleteMultiElementConfiguration,
+  activeMultiElementForecastConfigurationName,
+  applyMultiElementForecastConfiguration,
+  createMultiElementForecastConfiguration,
+  deleteMultiElementForecastConfiguration,
   multiInitInterval,
   multiInitIntervalOptions,
   multiInitPanelCount,
@@ -29,17 +33,25 @@ const {
   multiForecastPanelCountOptions,
   multiElementConfigurationName,
   multiElementConfigurations,
+  multiElementForecastConfigurationName,
+  multiElementForecastConfigurations,
+  multiElementForecastRows,
   multiElementPanelCount,
   multiElementPanelCountOptions,
   renameMultiElementConfiguration,
+  renameMultiElementForecastConfiguration,
   saveMultiElementConfiguration,
+  saveMultiElementForecastConfiguration,
   setMultiInitInterval,
   setMultiInitPanelCount,
+  setMultiElementConfigurationName,
   setMultiElementPanelCount,
+  setMultiElementForecastConfigurationName,
   setMultiForecastInterval,
   setMultiForecastPanelCount,
   shiftMultiForecastPage,
-  updateMultiElementPanel
+  updateMultiElementPanel,
+  updateMultiElementForecastPanel
 } = useWeatherViewContext()
 
 const modeLabel = computed(() => (
@@ -48,6 +60,14 @@ const modeLabel = computed(() => (
 const isForecastMode = computed(() => multiMapMode.value === 'forecast')
 const isInitMode = computed(() => multiMapMode.value === 'init')
 const isElementMode = computed(() => multiMapMode.value === 'element')
+const isElementForecastMode = computed(() => multiMapMode.value === 'element_forecast')
+const isInitForecastMode = computed(() => multiMapMode.value === 'init_forecast')
+const isElementInitMode = computed(() => multiMapMode.value === 'element_init')
+const isElementGridMode = computed(() => isElementForecastMode.value || isElementInitMode.value)
+const isElementEditableMode = computed(() => isElementMode.value || isElementGridMode.value)
+const comparisonColumnCount = computed(() => (
+  isElementInitMode.value ? multiInitPanelCount.value : multiForecastPanelCount.value
+))
 const activeElementPanelIndex = ref(0)
 const showElementSettings = ref(false)
 const showSaveConfigurationDialog = ref(false)
@@ -57,12 +77,45 @@ const configurationPendingDeletion = ref(null)
 const activeElementKey = computed(() => (
   multiMapPanels.value[activeElementPanelIndex.value]?.elementKey || ''
 ))
-const multiElementConfigurationOptions = computed(() => multiElementConfigurations.value.map((configuration) => ({
+const activeConfigurationName = computed(() => (
+  isElementGridMode.value
+    ? activeMultiElementForecastConfigurationName.value
+    : activeMultiElementConfigurationName.value
+))
+const configurationName = computed({
+  get: () => (isElementGridMode.value
+    ? multiElementForecastConfigurationName.value
+    : multiElementConfigurationName.value),
+  set: (value) => {
+    if (isElementGridMode.value) setMultiElementForecastConfigurationName(value)
+    else setMultiElementConfigurationName(value)
+  }
+})
+const configurations = computed(() => (
+  isElementGridMode.value ? multiElementForecastConfigurations.value : multiElementConfigurations.value
+))
+const multiElementConfigurationOptions = computed(() => configurations.value.map((configuration) => ({
   label: configuration.name,
   value: configuration.name
 })))
+const settingsPanels = computed(() => {
+  if (!isElementGridMode.value) return multiMapPanels.value
+  return multiElementForecastRows.value.map((row, index) => ({
+    ...row,
+    id: `element-forecast-row-${index}`,
+    title: row.label,
+    selectedLayerTypes: row.layers
+  }))
+})
 const gridStyle = computed(() => {
   const count = multiMapPanels.value.length
+  if (isElementGridMode.value) {
+    return {
+      '--multi-map-columns': comparisonColumnCount.value,
+      '--multi-map-rows': Math.ceil(count / comparisonColumnCount.value),
+      '--multi-map-panel-count': count
+    }
+  }
   const columns = count === 8 ? 4 : count === 6 || count === 9 ? 3 : 2
   return {
     '--multi-map-columns': columns,
@@ -87,45 +140,59 @@ function close() {
 }
 
 function activateElementPanel(index) {
-  if (isElementMode.value) activeElementPanelIndex.value = index
+  if (isElementEditableMode.value) activeElementPanelIndex.value = index
+}
+
+function activateElementSetting(index) {
+  activateElementPanel(isElementGridMode.value ? index * comparisonColumnCount.value : index)
 }
 
 function applyElementToActivePanel(element, elementKey) {
-  if (!isElementMode.value) return
-  updateMultiElementPanel(activeElementPanelIndex.value, element, elementKey)
+  if (isElementMode.value) {
+    updateMultiElementPanel(activeElementPanelIndex.value, element, elementKey)
+  } else if (isElementGridMode.value) {
+    updateMultiElementForecastPanel(activeElementPanelIndex.value, element, elementKey)
+  }
 }
 
 function selectMultiElementConfiguration(configuration) {
-  applyMultiElementConfiguration(configuration)
+  if (isElementGridMode.value) applyMultiElementForecastConfiguration(configuration)
+  else applyMultiElementConfiguration(configuration)
   activeElementPanelIndex.value = 0
 }
 
 function selectMultiElementConfigurationByName(name) {
-  const configuration = multiElementConfigurations.value.find((item) => item.name === name)
+  const configuration = configurations.value.find((item) => item.name === name)
   if (configuration) selectMultiElementConfiguration(configuration)
 }
 
 function createNewMultiElementConfiguration() {
-  createMultiElementConfiguration()
+  if (isElementGridMode.value) createMultiElementForecastConfiguration()
+  else createMultiElementConfiguration()
   activeElementPanelIndex.value = 0
 }
 
 function requestSaveMultiElementConfiguration() {
-  configurationNameDraft.value = multiElementConfigurationName.value.trim() || '配置1'
+  configurationNameDraft.value = configurationName.value.trim() || '配置1'
   showSaveConfigurationDialog.value = true
 }
 
 function confirmSaveMultiElementConfiguration() {
   const name = configurationNameDraft.value.trim()
   if (!name) return
-  saveMultiElementConfiguration(name)
+  if (isElementGridMode.value) saveMultiElementForecastConfiguration(name)
+  else saveMultiElementConfiguration(name)
   showSaveConfigurationDialog.value = false
 }
 
 function renameActiveMultiElementConfiguration() {
-  const nextName = multiElementConfigurationName.value.trim()
-  if (!activeMultiElementConfigurationName.value || !nextName) return
-  renameMultiElementConfiguration(activeMultiElementConfigurationName.value, nextName)
+  const nextName = configurationName.value.trim()
+  if (!activeConfigurationName.value || !nextName) return
+  if (isElementGridMode.value) {
+    renameMultiElementForecastConfiguration(activeConfigurationName.value, nextName)
+  } else {
+    renameMultiElementConfiguration(activeConfigurationName.value, nextName)
+  }
 }
 
 function requestDeleteMultiElementConfiguration(configuration) {
@@ -135,7 +202,10 @@ function requestDeleteMultiElementConfiguration(configuration) {
 
 function confirmDeleteMultiElementConfiguration() {
   const configuration = configurationPendingDeletion.value
-  if (configuration) deleteMultiElementConfiguration(configuration.name)
+  if (configuration) {
+    if (isElementGridMode.value) deleteMultiElementForecastConfiguration(configuration.name)
+    else deleteMultiElementConfiguration(configuration.name)
+  }
   configurationPendingDeletion.value = null
   showDeleteConfigurationDialog.value = false
 }
@@ -159,7 +229,7 @@ watch(multiMapPanels, (panels) => {
     <header class="multi-map-header">
       <div class="multi-map-heading">
         <strong>{{ modeLabel }}</strong>
-        <div v-if="isInitMode" class="multi-map-controls">
+        <div v-if="isInitMode || isInitForecastMode || isElementInitMode" class="multi-map-controls">
           <div class="multi-map-control-group">
             <span>起报间隔</span>
             <n-button-group size="small">
@@ -174,7 +244,7 @@ watch(multiMapPanels, (panels) => {
             </n-button-group>
           </div>
           <div class="multi-map-control-group">
-            <span>子图数量</span>
+            <span>{{ isInitMode ? '子图数量' : isInitForecastMode ? '起报行数' : '起报列数' }}</span>
             <n-button-group size="small">
               <n-button
                 v-for="count in multiInitPanelCountOptions"
@@ -182,13 +252,13 @@ watch(multiMapPanels, (panels) => {
                 :type="multiInitPanelCount === count ? 'primary' : 'default'"
                 @click="setMultiInitPanelCount(count)"
               >
-                {{ count }} 图
+                {{ isInitMode ? `${count} 图` : isInitForecastMode ? `${count} 行` : `${count} 列` }}
               </n-button>
             </n-button-group>
           </div>
         </div>
-        <div v-if="isElementMode" class="multi-map-controls multi-element-controls">
-          <div class="multi-map-control-group">
+        <div v-if="isElementEditableMode" class="multi-map-controls multi-element-controls">
+          <div v-if="isElementMode" class="multi-map-control-group">
             <span>子图数量</span>
             <n-button-group size="small">
               <n-button
@@ -209,19 +279,19 @@ watch(multiMapPanels, (panels) => {
             <template #icon><Save :size="15" /></template>
             保存配置
           </n-button>
-          <n-popover v-if="multiElementConfigurations.length" trigger="hover" placement="bottom-start" :show-arrow="false">
+          <n-popover v-if="configurations.length" trigger="hover" placement="bottom-start" :show-arrow="false">
             <template #trigger>
               <n-button size="small" secondary>
-                {{ activeMultiElementConfigurationName || '选择配置' }}
+                {{ activeConfigurationName || '选择配置' }}
               </n-button>
             </template>
             <div class="multi-element-configuration-menu">
               <n-button
-                v-for="configuration in multiElementConfigurations"
+                v-for="configuration in configurations"
                 :key="configuration.name"
                 size="small"
                 block
-                :type="activeMultiElementConfigurationName === configuration.name ? 'primary' : 'default'"
+                :type="activeConfigurationName === configuration.name ? 'primary' : 'default'"
                 @click="selectMultiElementConfiguration(configuration)"
               >
                 {{ configuration.name }}
@@ -234,8 +304,8 @@ watch(multiMapPanels, (panels) => {
             :selection-handler="applyElementToActivePanel"
           />
         </div>
-        <div v-if="isForecastMode" class="multi-forecast-controls">
-          <n-button-group size="small">
+        <div v-if="isForecastMode || isElementForecastMode || isInitForecastMode" class="multi-forecast-controls">
+          <n-button-group v-if="isForecastMode || isInitForecastMode" size="small">
             <n-button
               v-for="option in multiForecastIntervalOptions"
               :key="option.value"
@@ -245,14 +315,14 @@ watch(multiMapPanels, (panels) => {
               {{ option.label }}
             </n-button>
           </n-button-group>
-          <n-button-group size="small">
+          <n-button-group v-if="isForecastMode || isInitForecastMode" size="small">
             <n-button
               v-for="count in multiForecastPanelCountOptions"
               :key="count"
               :type="multiForecastPanelCount === count ? 'primary' : 'default'"
               @click="setMultiForecastPanelCount(count)"
             >
-              {{ count }} 图
+              {{ isInitForecastMode ? `${count} 列` : `${count} 图` }}
             </n-button>
           </n-button-group>
           <n-button-group size="small">
@@ -286,13 +356,13 @@ watch(multiMapPanels, (panels) => {
     <n-modal
       v-model:show="showElementSettings"
       preset="card"
-      title="多要素配置设置"
+      :title="isElementGridMode ? `${modeLabel}配置设置` : '多要素配置设置'"
       style="width: 760px; max-width: 94vw;"
     >
       <div class="multi-element-settings">
         <div class="multi-element-configuration-row">
           <n-select
-            :value="activeMultiElementConfigurationName || null"
+            :value="activeConfigurationName || null"
             size="small"
             clearable
             placeholder="选择已保存配置"
@@ -305,11 +375,11 @@ watch(multiMapPanels, (panels) => {
           </n-button>
         </div>
         <div class="multi-element-save-row">
-          <n-input v-model:value="multiElementConfigurationName" size="small" placeholder="配置名称，如 配置1" />
+          <n-input v-model:value="configurationName" size="small" placeholder="配置名称，如 配置1" />
           <n-button
             size="small"
             secondary
-            :disabled="!activeMultiElementConfigurationName || multiElementConfigurationName === activeMultiElementConfigurationName"
+            :disabled="!activeConfigurationName || configurationName === activeConfigurationName"
             @click="renameActiveMultiElementConfiguration"
           >
             <template #icon><Pencil :size="15" /></template>
@@ -320,7 +390,7 @@ watch(multiMapPanels, (panels) => {
             保存配置
           </n-button>
         </div>
-        <div class="multi-element-count-row">
+        <div v-if="isElementMode" class="multi-element-count-row">
           <span>子图数量</span>
           <n-button-group size="small">
             <n-button
@@ -333,22 +403,52 @@ watch(multiMapPanels, (panels) => {
             </n-button>
           </n-button-group>
         </div>
-        <p>逐一点击下方子图，再通过元素选择器指定该子图的层次和图层组合。</p>
+        <template v-if="isElementForecastMode">
+          <div class="multi-element-count-row multi-element-forecast-settings">
+            <span>预报时效间隔</span>
+            <n-button-group size="small">
+              <n-button
+                v-for="option in multiForecastIntervalOptions"
+                :key="option.value"
+                :type="multiForecastInterval === option.value ? 'primary' : 'default'"
+                @click="setMultiForecastInterval(option.value)"
+              >
+                {{ option.label }}
+              </n-button>
+            </n-button-group>
+          </div>
+          <div class="multi-element-count-row multi-element-forecast-settings">
+            <span>时效列数</span>
+            <n-button-group size="small">
+              <n-button
+                v-for="count in multiForecastPanelCountOptions"
+                :key="count"
+                :type="multiForecastPanelCount === count ? 'primary' : 'default'"
+                @click="setMultiForecastPanelCount(count)"
+              >
+                {{ count }} 列
+              </n-button>
+            </n-button-group>
+          </div>
+        </template>
+        <p v-if="isElementForecastMode">逐一设置每一行的天气要素；预报时效滑块控制第一列。</p>
+        <p v-else-if="isElementInitMode">逐一设置每一行的天气要素；每列起报时次不同，但各列内真实时间相同。</p>
+        <p v-else>逐一点击下方子图，再通过元素选择器指定该子图的层次和图层组合。</p>
         <div class="multi-element-panel-settings">
           <button
-            v-for="(panel, index) in multiMapPanels"
+            v-for="(panel, index) in settingsPanels"
             :key="panel.id"
             type="button"
-            :class="{ active: activeElementPanelIndex === index }"
-            @click="activateElementPanel(index)"
+            :class="{ active: isElementGridMode ? activeElementPanelIndex === index * comparisonColumnCount : activeElementPanelIndex === index }"
+            @click="activateElementSetting(index)"
           >
-            <strong>子图 {{ index + 1 }}</strong>
+            <strong>{{ isElementGridMode ? `第 ${index + 1} 行` : `子图 ${index + 1}` }}</strong>
             <span>{{ panel.title }}</span>
             <small>{{ panel.level === 'surface' ? '地面' : `${panel.level} hPa` }}｜{{ panel.selectedLayerTypes.join(' + ') }}</small>
           </button>
         </div>
         <div class="multi-element-picker-row">
-          <span>当前编辑：子图 {{ activeElementPanelIndex + 1 }}</span>
+          <span>当前编辑：{{ isElementGridMode ? `第 ${Math.floor(activeElementPanelIndex / comparisonColumnCount) + 1} 行` : `子图 ${activeElementPanelIndex + 1}` }}</span>
           <ElementSelector
             header-trigger
             wide
@@ -356,17 +456,17 @@ watch(multiMapPanels, (panels) => {
             :selection-handler="applyElementToActivePanel"
           />
         </div>
-        <div v-if="multiElementConfigurations.length" class="multi-element-saved-configs">
+        <div v-if="configurations.length" class="multi-element-saved-configs">
           <span>已保存配置</span>
           <div>
             <div
-              v-for="configuration in multiElementConfigurations"
+              v-for="configuration in configurations"
               :key="configuration.name"
               class="multi-element-saved-config"
             >
               <n-button
                 size="small"
-                :type="activeMultiElementConfigurationName === configuration.name ? 'primary' : 'default'"
+                :type="activeConfigurationName === configuration.name ? 'primary' : 'default'"
                 @click="selectMultiElementConfiguration(configuration)"
               >
                 {{ configuration.name }}
@@ -390,7 +490,7 @@ watch(multiMapPanels, (panels) => {
     <n-modal
       v-model:show="showSaveConfigurationDialog"
       preset="card"
-      title="保存多要素配置"
+      :title="isElementGridMode ? `保存${modeLabel}配置` : '保存多要素配置'"
       style="width: 400px; max-width: 92vw;"
     >
       <n-input v-model:value="configurationNameDraft" autofocus placeholder="配置名称，如 配置1" @keyup.enter="confirmSaveMultiElementConfiguration" />
@@ -422,7 +522,7 @@ watch(multiMapPanels, (panels) => {
         v-for="(panel, index) in multiMapPanels"
         :key="panel.id"
         :panel="{ ...panel, syncId: panel.id, syncState }"
-        :active="isElementMode && activeElementPanelIndex === index"
+        :active="isElementEditableMode && activeElementPanelIndex === index"
         @activate="activateElementPanel(index)"
       />
     </div>

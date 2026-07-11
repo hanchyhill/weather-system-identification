@@ -64,6 +64,7 @@ const SHEAR_COLORS = reactive({
 })
 const LAYER_COMBINATION_STORAGE_KEY = 'weather-view-layer-combinations'
 const MULTI_ELEMENT_CONFIGURATION_STORAGE_KEY = 'weather-view-multi-element-configurations'
+const MULTI_ELEMENT_FORECAST_CONFIGURATION_STORAGE_KEY = 'weather-view-multi-element-forecast-configurations'
 const FILL_LAYER_TYPES = new Set(['wind_speed_fill', 'vort_fill', 'rhum_fill', 'surface_speed_fill'])
 const WIND_OVERLAY_LAYER_TYPES = new Set([
   'wind_quiver',
@@ -173,6 +174,10 @@ const multiElementPanelCount = ref(4)
 const multiElementConfigurations = ref(loadMultiElementConfigurations())
 const multiElementConfigurationName = ref('配置1')
 const activeMultiElementConfigurationName = ref('')
+const multiElementForecastRows = ref(defaultMultiElementForecastRows())
+const multiElementForecastConfigurations = ref(loadMultiElementForecastConfigurations())
+const multiElementForecastConfigurationName = ref('配置1')
+const activeMultiElementForecastConfigurationName = ref('')
 const troughData = ref(null)
 const jetData = ref(null)
 const vortexCenters = ref([])
@@ -629,7 +634,10 @@ function setSelectedLayerTypes(values) {
 const multiMapModeOptions = [
   { value: 'init', label: '多起报', description: '比较当前与前 3 个起报时次' },
   { value: 'forecast', label: '多时效', description: '比较相邻的 4 个预报时效' },
-  { value: 'element', label: '多要素', description: '比较当前层次的 4 个要素组合' }
+  { value: 'element', label: '多要素', description: '比较当前层次的 4 个要素组合' },
+  { value: 'element_forecast', label: '多要素，多时效', description: '按行比较要素、按列比较预报时效' },
+  { value: 'init_forecast', label: '多起报，多时效', description: '按行比较起报、按列比较预报时效' },
+  { value: 'element_init', label: '多要素，多起报', description: '按行比较要素、按列比较起报时次' }
 ]
 
 const multiForecastIntervalOptions = [
@@ -701,26 +709,53 @@ function multiInitDescriptors() {
   }))
 }
 
+// 多起报、多时效：每一列以当前预报时效为基准向后延伸；每一行向前移动起报时次，
+// 同一列各行同步增加预报时效，从而保持相同的真实有效时间。
+function multiInitForecastPanelViews() {
+  const initDescriptors = multiInitDescriptors()
+  const forecastDescriptors = multiForecastDescriptors()
+  const startFcHour = Number(fcHour.value)
+
+  return initDescriptors.flatMap(({ initTime: panelInitTime, fcHour: rowFcHour }, rowIndex) => (
+    forecastDescriptors.map(({ value, valid }, columnIndex) => {
+      const offset = value ? Number(value) - startFcHour : 0
+      const panelFcHour = normalizeFcHour(Number(rowFcHour) + offset)
+      return panelView({
+        id: `init-forecast-${panelInitTime}-${panelFcHour}-${rowIndex}-${columnIndex}`,
+        title: `${panelInitTime} 起报｜+${panelFcHour} h`,
+        initTime: panelInitTime,
+        fcHour: panelFcHour,
+        showPanelTitle: false,
+        valid
+      })
+    })
+  ))
+}
+
 function setMultiInitInterval(value) {
   if (!multiInitIntervalOptions.some((option) => option.value === value)) return
   multiInitInterval.value = value
+  if (multiMapMode.value === 'element_init') activeMultiElementForecastConfigurationName.value = ''
 }
 
 function setMultiInitPanelCount(value) {
   const count = Number(value)
   if (!multiInitPanelCountOptions.includes(count)) return
   multiInitPanelCount.value = count
+  if (multiMapMode.value === 'element_init') activeMultiElementForecastConfigurationName.value = ''
 }
 
 function setMultiForecastInterval(value) {
   if (!multiForecastIntervalOptions.some((option) => option.value === value)) return
   multiForecastInterval.value = value
+  if (['element_forecast', 'element_init'].includes(multiMapMode.value)) activeMultiElementForecastConfigurationName.value = ''
 }
 
 function setMultiForecastPanelCount(value) {
   const count = Number(value)
   if (!multiForecastPanelCountOptions.includes(count)) return
   multiForecastPanelCount.value = count
+  if (['element_forecast', 'element_init'].includes(multiMapMode.value)) activeMultiElementForecastConfigurationName.value = ''
 }
 
 function setMultiElementPanelCount(value) {
@@ -730,7 +765,7 @@ function setMultiElementPanelCount(value) {
 }
 
 function shiftMultiForecastPage(direction) {
-  if (multiMapMode.value !== 'forecast') return
+  if (!['forecast', 'element_forecast', 'init_forecast'].includes(multiMapMode.value)) return
   const hours = sliderFcHours.value
   const startIndex = hours.indexOf(normalizeFcHour(fcHour.value))
   if (startIndex < 0) return
@@ -861,6 +896,73 @@ function updateMultiElementPanel(index, element, elementKey = '') {
   activeMultiElementConfigurationName.value = ''
 }
 
+function defaultMultiElementForecastRows() {
+  return [
+    { label: '500hPa天气形势', level: '500', layers: ['hght_contour', 'wind_barb'], elementKey: '' },
+    { label: '925hPa天气形势', level: '925', layers: ['hght_contour', 'wind_barb'], elementKey: '' },
+    { label: '地面风羽', level: 'surface', layers: ['surface_barb'], elementKey: '' }
+  ]
+}
+
+function multiElementForecastPanelViews() {
+  const descriptors = multiForecastDescriptors()
+  const rows = multiElementForecastRows.value.length
+    ? multiElementForecastRows.value
+    : defaultMultiElementForecastRows()
+
+  return rows.flatMap((row, rowIndex) => {
+    const element = normalizeMultiElementDescriptor(row, `要素${rowIndex + 1}`)
+    return descriptors.map(({ value, valid }, columnIndex) => panelView({
+      id: `element-forecast-${initTime.value}-${multiForecastInterval.value}-${rowIndex}-${columnIndex}-${value || 'invalid'}-${element.level}-${element.layers.join('-')}-${element.elementKey}`,
+      title: value ? `${element.label}｜+${value} h` : `${element.label}｜无可用时效`,
+      level: element.level,
+      selectedLayerTypes: [...element.layers],
+      elementKey: element.elementKey,
+      fcHour: value || fcHour.value,
+      showPanelTitle: false,
+      valid
+    }))
+  })
+}
+
+function multiElementInitPanelViews() {
+  const initDescriptors = multiInitDescriptors()
+  const rows = multiElementForecastRows.value.length
+    ? multiElementForecastRows.value
+    : defaultMultiElementForecastRows()
+
+  return rows.flatMap((row, rowIndex) => {
+    const element = normalizeMultiElementDescriptor(row, `要素${rowIndex + 1}`)
+    return initDescriptors.map(({ initTime: panelInitTime, fcHour: panelFcHour }, columnIndex) => panelView({
+      id: `element-init-${panelInitTime}-${panelFcHour}-${rowIndex}-${columnIndex}-${element.level}-${element.layers.join('-')}-${element.elementKey}`,
+      title: `${element.label}｜${panelInitTime} 起报`,
+      initTime: panelInitTime,
+      fcHour: panelFcHour,
+      level: element.level,
+      selectedLayerTypes: [...element.layers],
+      elementKey: element.elementKey,
+      showPanelTitle: false
+    }))
+  })
+}
+
+function updateMultiElementForecastPanel(index, element, elementKey = '') {
+  if (!['element_forecast', 'element_init'].includes(multiMapMode.value) || !multiMapPanels.value[index]) return
+  const columnCount = multiMapMode.value === 'element_init'
+    ? multiInitPanelCount.value
+    : multiForecastPanelCount.value
+  const rowIndex = Math.floor(index / columnCount)
+  if (!multiElementForecastRows.value[rowIndex]) return
+
+  multiElementForecastRows.value = multiElementForecastRows.value.map((row, currentRowIndex) => (
+    currentRowIndex === rowIndex
+      ? normalizeMultiElementDescriptor({ ...element, elementKey }, `要素${rowIndex + 1}`)
+      : row
+  ))
+  activeMultiElementForecastConfigurationName.value = ''
+  openMultiMap(multiMapMode.value)
+}
+
 function setMultiElementConfigurationName(value) {
   multiElementConfigurationName.value = String(value || '')
 }
@@ -954,6 +1056,114 @@ function deleteMultiElementConfiguration(name) {
   persistMultiElementConfigurations()
 }
 
+function setMultiElementForecastConfigurationName(value) {
+  multiElementForecastConfigurationName.value = String(value || '')
+}
+
+function nextMultiElementForecastConfigurationName() {
+  let index = 1
+  while (multiElementForecastConfigurations.value.some((configuration) => configuration.name === `配置${index}`)) {
+    index += 1
+  }
+  return `配置${index}`
+}
+
+function createMultiElementForecastConfiguration() {
+  multiElementForecastRows.value = defaultMultiElementForecastRows()
+  const mode = multiMapMode.value === 'element_init' ? 'element_init' : 'element_forecast'
+  multiMapMode.value = mode
+  activeMultiElementForecastConfigurationName.value = ''
+  multiElementForecastConfigurationName.value = nextMultiElementForecastConfigurationName()
+  openMultiMap(mode)
+}
+
+function loadMultiElementForecastConfigurations() {
+  if (typeof window === 'undefined') return []
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(MULTI_ELEMENT_FORECAST_CONFIGURATION_STORAGE_KEY) || '[]')
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((configuration) => configuration?.name && Array.isArray(configuration.rows))
+      .map((configuration) => ({
+        name: String(configuration.name),
+        rows: configuration.rows.map((row, index) => normalizeMultiElementDescriptor(row, `要素${index + 1}`)),
+        forecastInterval: ['6', '24', '48', 'continuous'].includes(String(configuration.forecastInterval))
+          ? String(configuration.forecastInterval)
+          : '24',
+        forecastPanelCount: [4, 6, 8, 9].includes(Number(configuration.forecastPanelCount))
+          ? Number(configuration.forecastPanelCount)
+          : 4
+      }))
+      .filter((configuration) => configuration.rows.length)
+  } catch {
+    return []
+  }
+}
+
+function persistMultiElementForecastConfigurations() {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(
+    MULTI_ELEMENT_FORECAST_CONFIGURATION_STORAGE_KEY,
+    JSON.stringify(multiElementForecastConfigurations.value)
+  )
+}
+
+function saveMultiElementForecastConfiguration(nameOverride = '') {
+  if (!['element_forecast', 'element_init'].includes(multiMapMode.value) || !multiElementForecastRows.value.length) return
+  const name = String(nameOverride || multiElementForecastConfigurationName.value).trim()
+    || nextMultiElementForecastConfigurationName()
+  const record = {
+    name,
+    rows: multiElementForecastRows.value.map((row, index) => normalizeMultiElementDescriptor(row, `要素${index + 1}`)),
+    forecastInterval: multiForecastInterval.value,
+    forecastPanelCount: multiForecastPanelCount.value
+  }
+  const existingIndex = multiElementForecastConfigurations.value.findIndex((configuration) => configuration.name === name)
+  if (existingIndex >= 0) multiElementForecastConfigurations.value.splice(existingIndex, 1, record)
+  else multiElementForecastConfigurations.value.push(record)
+
+  activeMultiElementForecastConfigurationName.value = name
+  multiElementForecastConfigurationName.value = name
+  persistMultiElementForecastConfigurations()
+}
+
+function renameMultiElementForecastConfiguration(currentName, nextName) {
+  const from = String(currentName || '').trim()
+  const to = String(nextName || '').trim()
+  if (!from || !to || from === to) return false
+  const currentIndex = multiElementForecastConfigurations.value.findIndex((configuration) => configuration.name === from)
+  if (currentIndex < 0 || multiElementForecastConfigurations.value.some((configuration) => configuration.name === to)) return false
+
+  const configuration = multiElementForecastConfigurations.value[currentIndex]
+  multiElementForecastConfigurations.value.splice(currentIndex, 1, { ...configuration, name: to })
+  if (activeMultiElementForecastConfigurationName.value === from) activeMultiElementForecastConfigurationName.value = to
+  if (multiElementForecastConfigurationName.value === from) multiElementForecastConfigurationName.value = to
+  persistMultiElementForecastConfigurations()
+  return true
+}
+
+function applyMultiElementForecastConfiguration(configuration) {
+  if (!configuration?.name || !Array.isArray(configuration.rows) || !configuration.rows.length) return
+  multiElementForecastRows.value = configuration.rows.map((row, index) => normalizeMultiElementDescriptor(row, `要素${index + 1}`))
+  const mode = multiMapMode.value === 'element_init' ? 'element_init' : 'element_forecast'
+  if (mode === 'element_forecast' && multiForecastIntervalOptions.some((option) => option.value === configuration.forecastInterval)) {
+    multiForecastInterval.value = configuration.forecastInterval
+  }
+  if (mode === 'element_forecast' && multiForecastPanelCountOptions.includes(Number(configuration.forecastPanelCount))) {
+    multiForecastPanelCount.value = Number(configuration.forecastPanelCount)
+  }
+  multiMapMode.value = mode
+  activeMultiElementForecastConfigurationName.value = configuration.name
+  multiElementForecastConfigurationName.value = configuration.name
+  openMultiMap(mode)
+}
+
+function deleteMultiElementForecastConfiguration(name) {
+  multiElementForecastConfigurations.value = multiElementForecastConfigurations.value.filter((configuration) => configuration.name !== name)
+  if (activeMultiElementForecastConfigurationName.value === name) activeMultiElementForecastConfigurationName.value = ''
+  persistMultiElementForecastConfigurations()
+}
+
 function openMultiMap(mode) {
   if (!multiMapModeOptions.some((option) => option.value === mode)) return
 
@@ -975,8 +1185,14 @@ function openMultiMap(mode) {
       showPanelTitle: false,
       valid
     }))
-  } else {
+  } else if (mode === 'element') {
     multiMapPanels.value = multiElementPanels().map(multiElementPanelView)
+  } else if (mode === 'element_forecast') {
+    multiMapPanels.value = multiElementForecastPanelViews()
+  } else if (mode === 'init_forecast') {
+    multiMapPanels.value = multiInitForecastPanelViews()
+  } else {
+    multiMapPanels.value = multiElementInitPanelViews()
   }
 
   multiMapMode.value = mode
@@ -2705,6 +2921,10 @@ const context = {
   applyMultiElementConfiguration,
   deleteMultiElementConfiguration,
   createMultiElementConfiguration,
+  activeMultiElementForecastConfigurationName,
+  applyMultiElementForecastConfiguration,
+  deleteMultiElementForecastConfiguration,
+  createMultiElementForecastConfiguration,
   elementConfig,
   activeElementKey,
   applyElementSelection,
@@ -2742,6 +2962,9 @@ const context = {
   multiElementConfigurations,
   multiElementPanelCount,
   multiElementPanelCountOptions,
+  multiElementForecastConfigurationName,
+  multiElementForecastConfigurations,
+  multiElementForecastRows,
   mouseGeo,
   openMultiMap,
   projectionName,
@@ -2757,6 +2980,7 @@ const context = {
   setMultiForecastPanelCount,
   setMultiElementConfigurationName,
   setMultiElementPanelCount,
+  setMultiElementForecastConfigurationName,
   shiftInitTime,
   shiftMultiForecastPage,
   selectedLayerLabels,
@@ -2764,6 +2988,9 @@ const context = {
   saveMultiElementConfiguration,
   renameMultiElementConfiguration,
   updateMultiElementPanel,
+  saveMultiElementForecastConfiguration,
+  renameMultiElementForecastConfiguration,
+  updateMultiElementForecastPanel,
   canShiftMultiForecastBackward,
   canShiftMultiForecastForward,
   SHEAR_COLORS,

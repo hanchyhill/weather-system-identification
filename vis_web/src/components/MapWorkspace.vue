@@ -62,7 +62,7 @@ const {
     <div class="toolbar">
       <div>
         <template v-if="compact">
-          <strong v-if="showPanelTitle && panelTitle">{{ panelTitle }}</strong>
+          <strong v-if="showPanelTitle && panelTitle" class="panel-title" :title="panelTitle">{{ panelTitle }}</strong>
           <span>+{{ fcHour }} h</span>
           <strong>{{ forecastValidTimeBjtLabel }}</strong>
         </template>

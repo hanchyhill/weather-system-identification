@@ -315,12 +315,17 @@ input {
 .toolbar > div {
   display: flex;
   align-items: baseline;
+  flex: 1 1 auto;
   gap: 12px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .toolbar strong,
 .toolbar span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -504,6 +509,7 @@ input {
 }
 
 .multi-map-panel {
+  container-type: inline-size;
   position: relative;
   min-width: 0;
   min-height: 0;
@@ -711,7 +717,8 @@ input {
 
 .multi-map-grid .toolbar strong,
 .multi-map-grid .toolbar span {
-  font-size: 28px;
+  font-size: 16px;
+  font-size: clamp(12px, 5cqw, 28px);
 }
 
 .map-workspace-compact .coordinate-readout {
