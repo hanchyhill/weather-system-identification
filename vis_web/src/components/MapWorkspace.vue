@@ -101,16 +101,16 @@ const {
         <MultiTimeSelector />
       </div>
 
-      <div v-if="!compact" class="drawing-toolbar-anchor">
-        <DrawingToolbar />
-      </div>
-
       <div v-if="!compact" class="element-selector-anchor">
         <ElementSelector />
       </div>
 
       <div v-if="!compact" class="multi-map-selector-anchor">
         <MultiMapSelector />
+      </div>
+
+      <div v-if="!compact" class="drawing-toolbar-anchor">
+        <DrawingToolbar />
       </div>
 
       <div v-if="mouseGeo" class="coordinate-readout">

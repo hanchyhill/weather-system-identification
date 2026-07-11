@@ -230,7 +230,6 @@ watch(multiMapPanels, (panels) => {
           </n-popover>
           <ElementSelector
             header-trigger
-            wide
             :active-element-key="activeElementKey"
             :selection-handler="applyElementToActivePanel"
           />
@@ -352,6 +351,7 @@ watch(multiMapPanels, (panels) => {
           <span>当前编辑：子图 {{ activeElementPanelIndex + 1 }}</span>
           <ElementSelector
             header-trigger
+            wide
             :active-element-key="activeElementKey"
             :selection-handler="applyElementToActivePanel"
           />

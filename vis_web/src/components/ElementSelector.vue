@@ -40,7 +40,8 @@ const props = defineProps({
     type: Function,
     default: null
   },
-  headerTrigger: Boolean
+  headerTrigger: Boolean,
+  wide: Boolean
 })
 
 const showConfig = ref(false)
@@ -201,7 +202,7 @@ defineExpose({ openConfig })
     :style="headerTrigger ? 'max-width: 96vw;' : 'max-width: 96vw; transform: translateY(-110px);'"
   >
     <template #trigger>
-      <n-button v-if="headerTrigger" size="small" secondary>
+      <n-button v-if="headerTrigger" class="es-header-trigger" size="small" type="primary">
         <template #icon><LayoutGrid :size="15" /></template>
         天气要素选择器
       </n-button>
@@ -210,7 +211,7 @@ defineExpose({ openConfig })
       </button>
     </template>
 
-    <div class="es-popover">
+    <div class="es-popover" :class="{ 'es-popover-wide': wide }">
       <div class="es-header">
         <div>
           <strong>天气要素选择器</strong>
@@ -484,6 +485,38 @@ defineExpose({ openConfig })
   max-width: 92vw;
 }
 
+.es-popover-wide {
+  width: min(1180px, calc(100vw - 48px));
+}
+
+.es-popover-wide .es-body {
+  width: 100%;
+}
+
+.es-popover-wide .es-grid-box {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.es-popover-wide .es-grid {
+  width: 100%;
+}
+
+.es-popover-wide .es-single-box {
+  min-width: 250px;
+}
+
+:deep(.es-header-trigger.n-button) {
+  border-color: #0369a1;
+  background: #0369a1;
+  box-shadow: 0 4px 12px rgba(3, 105, 161, 0.28);
+}
+
+:deep(.es-header-trigger.n-button:hover) {
+  border-color: #075985;
+  background: #075985;
+}
+
 .es-header {
   display: flex;
   align-items: flex-start;
@@ -551,10 +584,10 @@ defineExpose({ openConfig })
 .es-el-btn {
   display: inline-block;
   padding: 2px 6px;
-  border: 1px solid #2563eb;
+  border: 1px solid #0369a1;
   border-radius: 6px;
-  background: #eff6ff;
-  color: #1d4ed8;
+  background: #e0f2fe;
+  color: #075985;
   font-size: 11px;
   line-height: 1.3;
   white-space: nowrap;
@@ -563,14 +596,14 @@ defineExpose({ openConfig })
 }
 
 .es-el-btn:hover {
-  background: #2563eb;
+  background: #0369a1;
   color: #fff;
 }
 
 .es-el-active {
-  background: #2563eb;
+  background: #075985;
   color: #fff;
-  box-shadow: inset 0 0 0 2px #1e3a8a;
+  box-shadow: inset 0 0 0 2px #082f49;
 }
 
 .es-single-box {

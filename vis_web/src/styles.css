@@ -400,21 +400,21 @@ input {
   z-index: 5;
 }
 
-.drawing-toolbar-anchor {
+.element-selector-anchor {
   position: absolute;
   top: 62px;
   left: 14px;
   z-index: 5;
 }
 
-.element-selector-anchor {
+.multi-map-selector-anchor {
   position: absolute;
   top: 110px;
   left: 14px;
   z-index: 5;
 }
 
-.multi-map-selector-anchor {
+.drawing-toolbar-anchor {
   position: absolute;
   top: 158px;
   left: 14px;
@@ -488,17 +488,19 @@ input {
   gap: 8px;
 }
 
-.multi-element-header-configs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.multi-element-header-configs > div,
 .multi-element-saved-config {
   display: flex;
   align-items: center;
   gap: 1px;
+}
+
+.multi-element-configuration-menu {
+  display: grid;
+  gap: 4px;
+  min-width: 150px;
+  max-height: min(48vh, 360px);
+  overflow-y: auto;
+  padding: 4px;
 }
 
 .multi-map-panel {

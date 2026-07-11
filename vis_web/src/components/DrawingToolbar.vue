@@ -49,7 +49,7 @@ function pickErase() {
 <template>
   <n-popover trigger="manual" :show="show" placement="right-start" style="width: 260px;">
     <template #trigger>
-      <n-tooltip trigger="hover">
+      <n-tooltip trigger="hover" placement="right">
         <template #trigger>
           <button
             type="button"
