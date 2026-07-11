@@ -1166,6 +1166,14 @@ function deleteMultiElementForecastConfiguration(name) {
 
 function openMultiMap(mode) {
   if (!multiMapModeOptions.some((option) => option.value === mode)) return
+  const isModeChange = multiMapMode.value !== mode
+
+  // 该矩阵模式默认以 4 个起报行和 4 个预报时效列打开；
+  // 同一模式内修改控制项时不会触发重置。
+  if (mode === 'init_forecast' && isModeChange) {
+    multiInitPanelCount.value = 4
+    multiForecastPanelCount.value = 4
+  }
 
   if (mode === 'init') {
     multiMapPanels.value = multiInitDescriptors().map((descriptor, index) => {
