@@ -4,7 +4,8 @@ import { feature } from 'topojson-client'
 
 import worldTopo from '../source/110m.json'
 import chinaTopo from '../source/bou2_4l.topo.simplify.json'
-import { SvgImageCache } from '../utils/indexedDBCache'
+import { sharedSvgImageCache } from '../utils/indexedDBCache'
+import { runQueued, PRIORITY } from '../utils/loadQueue'
 import { drawShape, catmullRom } from '../utils/mapDrawing'
 import {
   LAYER_TYPE_OPTIONS,
@@ -13,6 +14,10 @@ import {
   loadElementConfig,
   persistElementConfig
 } from '../utils/elementSelectorConfig'
+
+// 在途请求合并表（模块级，跨所有视图实例共享）：多个子图/单图同时请求同一 cacheKey 时，
+// 只发起一次网络+解码，其余等待同一 Promise。键与内存缓存一致（含 @Nx 超采样后缀）。
+const inFlightImageLoads = new Map()
 
 export function useWeatherView(initialView = {}) {
 
@@ -52,6 +57,7 @@ const DEFAULT_FC_HOURS = [
 ]
 const DEFAULT_LEVELS = ['200', '500', '700', '850', '925', '950', '1000']
 const VORTEX_TRACK_LEVELS = new Set(['850', '925', '950', '1000', 'surface'])
+const COLD_FRONT_LEVELS = new Set(['850', '925', '950', '1000'])
 const DEFAULT_MAP_BOUNDS = { lon_min: 60, lon_max: 150, lat_min: 0, lat_max: 60 }
 const DEFAULT_MAP_CENTER = [105, 30]
 const DEFAULT_MAP_SCALE = 3
@@ -93,7 +99,10 @@ const CONTOUR_DILATION_OFFSETS = [
 // 采样倍率封顶 2 倍：3 倍会让位图像素数达 9 倍，高放大系数下重栅格化/绘制明显卡顿；
 // 2 倍在清晰度与性能之间更平衡，并把提升阈值适当抬高，减少高倍率下的重载与内存占用。
 const RENDER_SCALE_MAX = 2
-function renderScaleForZoom(k) {
+function renderScaleForZoom(k, compact = false) {
+  // compact（多图子图）恒为 1：子图在屏上很小，超采样带来的清晰度提升不可感知，
+  // 却会让位图像素数翻倍、重栅格化/绘制/内存显著增加，故直接封顶为 1。
+  if (compact) return 1
   if (!(k > 8)) return 1
   return RENDER_SCALE_MAX
 }
@@ -102,6 +111,13 @@ const initialLayers = Array.isArray(initialView.selectedLayerTypes) && initialVi
   ? initialView.selectedLayerTypes.map(String)
   : ['wind_barb']
 const compactView = Boolean(initialView.compact)
+// 多图子图专用预加载目标：由父级（MultiMapWorkspace 所在实例）在构造 panel 描述符时给出，
+// 内容为“本子图在相邻页/相邻时效切换后会用到的预报时效列表”。为空时不进行邻近预加载。
+// 这样把预加载的协调权收归父级：各子图只预取与自身对应的少量时效，跨子图去重由共享缓存
+// （sharedSvgImageCache）自动完成，取代原先每子图独立预加载 13 个相邻时效导致的相互竞争。
+const compactPreloadFcHours = Array.isArray(initialView.preloadFcHours)
+  ? initialView.preloadFcHours.map(String)
+  : null
 const minCanvasWidth = compactView ? 260 : 540
 const minCanvasHeight = compactView ? 200 : 420
 const syncState = initialView.syncState || null
@@ -180,11 +196,13 @@ const multiElementForecastConfigurationName = ref('配置1')
 const activeMultiElementForecastConfigurationName = ref('')
 const troughData = ref(null)
 const jetData = ref(null)
+const coldFrontData = ref(null)
 const vortexCenters = ref([])
 const vortexTracks = ref(null)
 const showSvgLayer = ref(true)
 const showTrough = ref(true)
 const showJetAxes = ref(false)
+const showColdFronts = ref(true)
 const showRawPoints = ref(false)
 const showVortexCenters = ref(true)
 const showVortexTracks = ref(true)
@@ -246,6 +264,7 @@ const loadingState = reactive({
   svg: '未加载',
   trough: '未加载',
   jet: '未加载',
+  coldFront: '未加载',
   vortexCenters: '未加载',
   vortexTracks: '未加载',
   map: '未加载'
@@ -257,7 +276,7 @@ const hoverLine = ref(null)
 const hoverJetLine = ref(null)
 const hoverVortexCenter = ref(null)
 const hoverVortexTrack = ref(null)
-const cache = new SvgImageCache()
+const cache = sharedSvgImageCache
 
 let resizeObserver = null
 let zoomBehavior = null
@@ -269,6 +288,7 @@ let loadedTileZoom = null
 let loadedRenderScale = 1
 let preloadRunId = 0
 let preloadTimer = null
+let preloadAbortController = null
 
 const projectionOptions = [
   { label: '等经纬度', value: 'equirectangular' },
@@ -278,6 +298,7 @@ const projectionOptions = [
 
 const systemTabs = [
   { label: '槽线', value: 'trough' },
+  { label: '冷锋', value: 'coldFront' },
   { label: '涡旋', value: 'vortex' },
   { label: '急流轴', value: 'jet' }
 ]
@@ -427,6 +448,11 @@ const visibleJetAxisLines = computed(() => {
   })
 })
 
+const visibleColdFrontLines = computed(() => {
+  if (!showColdFronts.value) return []
+  return coldFrontData.value?.cold_front_lines || []
+})
+
 const visibleVortexCenters = computed(() => {
   if (!showVortexCenters.value) return []
   return (vortexCenters.value || []).filter((center) => (
@@ -448,6 +474,7 @@ const visibleVortexTracks = computed(() => {
 })
 const visibleTroughCount = computed(() => visibleTroughLines.value.length)
 const visibleJetAxisCount = computed(() => visibleJetAxisLines.value.length)
+const visibleColdFrontCount = computed(() => visibleColdFrontLines.value.length)
 const visibleVortexCenterCount = computed(() => visibleVortexCenters.value.length)
 const visibleVortexTrackCount = computed(() => visibleVortexTracks.value.length)
 
@@ -632,12 +659,12 @@ function setSelectedLayerTypes(values) {
 }
 
 const multiMapModeOptions = [
-  { value: 'init', label: '多起报', description: '比较当前与前 3 个起报时次' },
-  { value: 'forecast', label: '多时效', description: '比较相邻的 4 个预报时效' },
-  { value: 'element', label: '多要素', description: '比较当前层次的 4 个要素组合' },
-  { value: 'element_forecast', label: '多要素，多时效', description: '按行比较要素、按列比较预报时效' },
-  { value: 'init_forecast', label: '多起报，多时效', description: '按行比较起报、按列比较预报时效' },
-  { value: 'element_init', label: '多要素，多起报', description: '按行比较要素、按列比较起报时次' }
+  { value: 'init', label: '多起报', description: '比较当前与前 3 个起报时次', group: 'single' },
+  { value: 'forecast', label: '多时效', description: '比较相邻的 4 个预报时效', group: 'single' },
+  { value: 'element', label: '多要素', description: '比较当前层次的 4 个要素组合', group: 'single' },
+  { value: 'element_forecast', label: '多要素，多时效', description: '按行比较要素、按列比较预报时效', group: 'dual' },
+  { value: 'init_forecast', label: '多起报，多时效', description: '按行比较起报、按列比较预报时效', group: 'dual' },
+  { value: 'element_init', label: '多要素，多起报', description: '按行比较要素、按列比较起报时次', group: 'dual' }
 ]
 
 const multiForecastIntervalOptions = [
@@ -697,6 +724,36 @@ function multiForecastDescriptors() {
   })
 }
 
+// 计算某个预报时效子图在“翻页”后会落到的预报时效（供多图协调式预加载使用）。
+// 翻页步长与 shiftMultiForecastPage 一致：连续模式按索引位移 panelCount，间隔模式按
+// interval×panelCount 位移。directions 指定预取方向（1=下一页、-1=上一页）：单轴时效对比
+// 预取前后两页；双轴（要素×时效）子图数量翻倍，仅预取下一页以减轻主线程与网络压力。
+// 仅返回滑块时效列表内实际存在的值；各子图只预取自己这几个时效，N 个子图的并集恰好覆盖
+// 相邻页整组，跨子图重叠由共享缓存自动去重。
+function pagePreloadFcHours(panelFcHour, directions = [1, -1]) {
+  if (!panelFcHour) return []
+  const hours = sliderFcHours.value
+  const panelCount = multiForecastPanelCount.value
+  const targets = []
+
+  if (multiForecastInterval.value === 'continuous') {
+    const idx = hours.indexOf(normalizeFcHour(panelFcHour))
+    if (idx < 0) return []
+    for (const direction of directions) {
+      const value = hours[idx + (panelCount * direction)]
+      if (value && !targets.includes(value)) targets.push(value)
+    }
+    return targets
+  }
+
+  const offset = Number(multiForecastInterval.value) * panelCount
+  for (const direction of directions) {
+    const value = normalizeFcHour(Number(panelFcHour) + (offset * direction))
+    if (hours.includes(value) && !targets.includes(value)) targets.push(value)
+  }
+  return targets
+}
+
 // 多起报对比保持首图的有效时间不变：每向前一个起报间隔，预报时效同步增加。
 // 例如 2025071012 起报 +000h、12 小时前起报 +012h，均对应 2025071012。
 function multiInitDescriptors() {
@@ -725,6 +782,7 @@ function multiInitForecastPanelViews() {
         title: `${panelInitTime} 起报｜+${panelFcHour} h`,
         initTime: panelInitTime,
         fcHour: panelFcHour,
+        preloadFcHours: pagePreloadFcHours(panelFcHour, [1]),
         showPanelTitle: false,
         valid
       })
@@ -919,6 +977,7 @@ function multiElementForecastPanelViews() {
       selectedLayerTypes: [...element.layers],
       elementKey: element.elementKey,
       fcHour: value || fcHour.value,
+      preloadFcHours: pagePreloadFcHours(value, [1]),
       showPanelTitle: false,
       valid
     }))
@@ -1190,6 +1249,7 @@ function openMultiMap(mode) {
       id: `forecast-${initTime.value}-${multiForecastInterval.value}-${index}-${value || 'invalid'}`,
       title: value ? `+${value} h` : '无可用时效',
       fcHour: value || fcHour.value,
+      preloadFcHours: pagePreloadFcHours(value),
       showPanelTitle: false,
       valid
     }))
@@ -1625,11 +1685,19 @@ function drawMap() {
   const canvas = canvasRef.value
   if (!canvas) return
   const context = canvas.getContext('2d')
-  const ratio = window.devicePixelRatio || 1
-  canvas.width = Math.floor(canvasSize.width * ratio)
-  canvas.height = Math.floor(canvasSize.height * ratio)
-  canvas.style.width = `${canvasSize.width}px`
-  canvas.style.height = `${canvasSize.height}px`
+  // compact（多图子图）固定 1×：子图尺寸小，不随设备像素比放大位图，显著降低
+  // 每个子图的栅格/绘制成本与显存占用；单图仍用完整 devicePixelRatio 保持清晰。
+  const ratio = compactView ? 1 : (window.devicePixelRatio || 1)
+  const targetWidth = Math.floor(canvasSize.width * ratio)
+  const targetHeight = Math.floor(canvasSize.height * ratio)
+  // 仅在尺寸变化时才重设 canvas.width/height：赋值会清空并重新分配整块 backing store，
+  // 若每次重绘（hover/zoom/平移）都执行，9 个子图叠加开销很大。尺寸不变时用 clearRect 清屏即可。
+  if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+    canvas.width = targetWidth
+    canvas.height = targetHeight
+    canvas.style.width = `${canvasSize.width}px`
+    canvas.style.height = `${canvasSize.height}px`
+  }
   context.setTransform(ratio, 0, 0, ratio, 0, 0)
   context.clearRect(0, 0, canvasSize.width, canvasSize.height)
 
@@ -1648,6 +1716,7 @@ function drawMap() {
   drawGraticule(context, projection)
   drawWeatherLayers(context, projection, false)
   drawTroughLines(context, projection)
+  drawColdFrontLines(context, projection)
   drawJetAxes(context, projection)
   drawVortexTracks(context, projection)
   drawVortexCenters(context, projection)
@@ -1815,6 +1884,24 @@ function drawTroughLines(context, projection) {
         context.fill()
       }
     }
+  }
+}
+
+function drawColdFrontLines(context, projection) {
+  if (!visibleColdFrontLines.value.length) return
+
+  for (const line of visibleColdFrontLines.value) {
+    const projectedPoints = (line.points || [])
+      .map((point) => projection([point.lon, point.lat]))
+      .filter((point) => point && Number.isFinite(point[0]) && Number.isFinite(point[1]))
+    if (projectedPoints.length < 2) continue
+
+    drawShape(
+      context,
+      { kind: 'line', render: 'cold', color: '#2563eb' },
+      projectedPoints,
+      zoomTransform.value.k
+    )
   }
 }
 
@@ -2200,6 +2287,7 @@ async function loadManifest() {
   } finally {
     await loadActiveLayer()
     await loadTrough()
+    await loadColdFronts()
     await loadJetAxes()
     await loadVortexCenters()
     await loadVortexTracks()
@@ -2210,12 +2298,15 @@ async function loadManifest() {
 async function loadActiveLayer() {
   const loadId = ++activeLayerLoadId
   visibleTileLoadId += 1
+  // 切换时效/图层时先取消上一轮预加载，把并发名额与主线程让给“当前所需”的可见瓦片；
+  // 本轮可见瓦片加载完成后会在末尾重新 schedulePreload。
+  cancelPreload()
   activeSvgLayers.value = []
   setSelectedLayerTypes(selectedLayerTypes.value)
   const projection = buildProjection()
   const tileZoom = getTileZoom(zoomTransform.value.k)
   loadedTileZoom = tileZoom
-  const renderScale = renderScaleForZoom(zoomTransform.value.k)
+  const renderScale = renderScaleForZoom(zoomTransform.value.k, compactView)
   loadedRenderScale = renderScale
   const candidates = selectedLayerTypes.value.map((type) => ({
     type,
@@ -2336,7 +2427,15 @@ function decodeImage(src) {
   return new Promise((resolve, reject) => {
     const image = new Image()
     image.crossOrigin = 'anonymous'
-    image.onload = () => resolve(image)
+    image.onload = async () => {
+      // 主动 decode() 让位图在解码完成后再返回，避免首次 drawImage 时同步栅格化阻塞主线程。
+      try {
+        if (typeof image.decode === 'function') await image.decode()
+      } catch {
+        // decode() 失败（个别浏览器/跨域）时退回到 onload 语义，仍可绘制。
+      }
+      resolve(image)
+    }
     image.onerror = reject
     image.src = src
   })
@@ -2352,7 +2451,7 @@ function scaleSvgMarkup(text, scale) {
   ))
 }
 
-async function loadSvgImage(url, renderScale = 1) {
+async function loadSvgImage(url, renderScale = 1, priority = PRIORITY.HIGH, signal = null) {
   if (!url) return null
   const scale = renderScale > 1 ? renderScale : 1
   const cacheKey = scale > 1 ? `${url}@${scale}x` : url
@@ -2360,26 +2459,42 @@ async function loadSvgImage(url, renderScale = 1) {
     const cached = await cache.get(cacheKey)
     if (cached) return cached
 
-    let image
-    if (scale > 1) {
-      // 以更高的超采样倍率重新栅格化：拉取 SVG 源文本、放大根节点尺寸后再解码。
-      const response = await fetch(url)
-      if (!response.ok) return null
-      const markup = scaleSvgMarkup(await response.text(), scale)
-      const blobUrl = URL.createObjectURL(new Blob([markup], { type: 'image/svg+xml' }))
-      try {
-        image = await decodeImage(blobUrl)
-      } finally {
-        URL.revokeObjectURL(blobUrl)
-      }
-    } else {
-      image = await decodeImage(url)
-    }
+    // 在途合并：相同 cacheKey 的并发请求复用同一 Promise，避免多个子图重复网络/解码。
+    const pending = inFlightImageLoads.get(cacheKey)
+    if (pending) return await pending
 
-    if (!image) return null
-    await cache.set(cacheKey, image)
-    return image
+    // 网络+解码走全局限流器；可见瓦片高优先、预加载低优先，避免多图 stampede 打满连接池。
+    // signal 使尚未开始的（预加载）任务在切换/卸载时可被取消，及时把并发名额让给可见瓦片。
+    const task = runQueued(async () => {
+      let image
+      if (scale > 1) {
+        // 以更高的超采样倍率重新栅格化：拉取 SVG 源文本、放大根节点尺寸后再解码。
+        const response = await fetch(url, signal ? { signal } : undefined)
+        if (!response.ok) return null
+        const markup = scaleSvgMarkup(await response.text(), scale)
+        const blobUrl = URL.createObjectURL(new Blob([markup], { type: 'image/svg+xml' }))
+        try {
+          image = await decodeImage(blobUrl)
+        } finally {
+          URL.revokeObjectURL(blobUrl)
+        }
+      } else {
+        image = await decodeImage(url)
+      }
+
+      if (!image) return null
+      cache.set(cacheKey, image)
+      return image
+    }, priority, signal)
+
+    inFlightImageLoads.set(cacheKey, task)
+    try {
+      return await task
+    } finally {
+      inFlightImageLoads.delete(cacheKey)
+    }
   } catch {
+    inFlightImageLoads.delete(cacheKey)
     return null
   }
 }
@@ -2390,6 +2505,15 @@ async function loadSvgImage(url, renderScale = 1) {
 const PRELOAD_FC_HOUR_OFFSETS = [1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7]
 
 function neighborPreloadFcHours() {
+  // 多图子图：只预取父级指定的时效（相邻页/相邻时效切换后本子图会用到的），不做 13 邻churn。
+  if (compactView) {
+    if (!compactPreloadFcHours || !compactPreloadFcHours.length) return []
+    const hours = sliderFcHours.value
+    return compactPreloadFcHours.filter((value) => (
+      value && value !== fcHour.value && hours.includes(value)
+    ))
+  }
+
   const hours = sliderFcHours.value
   const index = fcHourIndex.value
   const result = []
@@ -2439,32 +2563,51 @@ async function preloadNeighborForecasts() {
   const targets = neighborPreloadFcHours()
   if (!targets.length) return
 
+  // 每轮预加载独立的取消令牌：新一轮或卸载时 abort，丢弃尚未开始的预加载任务，
+  // 及时把并发名额让给切换后“当前所需”的可见瓦片。
+  const controller = new AbortController()
+  preloadAbortController = controller
+  const { signal } = controller
+
   preloading.value = true
   try {
     for (const targetFcHour of targets) {
-      if (runId !== preloadRunId) return
+      if (runId !== preloadRunId || signal.aborted) return
       const urls = collectPreloadUrls(targetFcHour)
-      for (const url of urls) {
-        if (runId !== preloadRunId) return
-        // eslint-disable-next-line no-await-in-loop
-        if (await cache.has(url)) continue
-        // eslint-disable-next-line no-await-in-loop
-        await loadSvgImage(url)
-      }
+      // 同一时效的瓦片并行预取（受全局限流器 LOW 名额约束），逐时效推进以保持“近邻优先”，
+      // 使单图模式下相邻时效能像改动前那样迅速预热，而不是逐张串行地慢慢加载。
+      // eslint-disable-next-line no-await-in-loop
+      await Promise.all(urls.map(async (url) => {
+        if (runId !== preloadRunId || signal.aborted) return
+        if (await cache.has(url)) return
+        await loadSvgImage(url, 1, PRIORITY.LOW, signal)
+      }))
     }
   } finally {
     // 仅当自己仍是最新的预加载任务时才关闭标识，避免被后启动的任务提前清除。
-    if (runId === preloadRunId) preloading.value = false
+    if (runId === preloadRunId) {
+      preloading.value = false
+      if (preloadAbortController === controller) preloadAbortController = null
+    }
+  }
+}
+
+// 取消当前进行中的预加载：中止尚未开始的任务并令运行号失效。切换时效/图层、卸载时调用。
+function cancelPreload() {
+  preloadRunId += 1
+  if (preloadTimer) {
+    clearTimeout(preloadTimer)
+    preloadTimer = null
+  }
+  if (preloadAbortController) {
+    preloadAbortController.abort()
+    preloadAbortController = null
   }
 }
 
 // 在当前时效瓦片加载完毕后调度预加载；用延时+运行号确保不阻塞渲染且旧任务可被取消。
 function schedulePreload() {
-  if (preloadTimer) {
-    clearTimeout(preloadTimer)
-    preloadTimer = null
-  }
-  preloadRunId += 1
+  cancelPreload()
   preloadTimer = setTimeout(() => {
     preloadTimer = null
     preloadNeighborForecasts()
@@ -2508,6 +2651,26 @@ async function loadJetAxes() {
     loadingState.jet = '完成'
   } catch {
     loadingState.jet = '缺失'
+  } finally {
+    requestDraw()
+  }
+}
+
+async function loadColdFronts() {
+  coldFrontData.value = null
+  if (!COLD_FRONT_LEVELS.has(String(level.value))) {
+    loadingState.coldFront = '该层无冷锋产品'
+    requestDraw()
+    return
+  }
+
+  const url = `/data/${initTime.value}/cold_fronts/cold_front_${initTime.value}_${fcHour.value}_${level.value}hPa.json`
+  try {
+    loadingState.coldFront = '加载中'
+    coldFrontData.value = await fetchJson(url)
+    loadingState.coldFront = '完成'
+  } catch {
+    loadingState.coldFront = '缺失'
   } finally {
     requestDraw()
   }
@@ -3007,6 +3170,7 @@ const context = {
   showHistoricalVortexTracks,
   showJetArrowHeads,
   showJetAxes,
+  showColdFronts,
   showRawPoints,
   showSvgLayer,
   showTileDebug,
@@ -3027,6 +3191,7 @@ const context = {
   troughShearFilters,
   troughShearOptions,
   visibleJetAxisCount,
+  visibleColdFrontCount,
   visibleTroughCount,
   visibleVortexCenterCount,
   visibleVortexTrackCount,
@@ -3069,6 +3234,7 @@ watch([
 watch([fcHour, level], async () => {
   await loadActiveLayer()
   await loadTrough()
+  await loadColdFronts()
   await loadJetAxes()
   await loadVortexCenters()
 })
@@ -3084,6 +3250,7 @@ watch(projectionName, async () => {
 watch([
   showSvgLayer,
   showTrough,
+  showColdFronts,
   showJetAxes,
   showRawPoints,
   showVortexCenters,
@@ -3144,7 +3311,7 @@ onMounted(async () => {
         }
       }
       const nextTileZoom = getTileZoom(event.transform.k)
-      const nextRenderScale = renderScaleForZoom(event.transform.k)
+      const nextRenderScale = renderScaleForZoom(event.transform.k, compactView)
       const tileZoomChanged = selectedLayerHasTiles() && nextTileZoom !== loadedTileZoom
       const renderScaleChanged = nextRenderScale !== loadedRenderScale && activeSvgLayers.value.length > 0
       if (tileZoomChanged || renderScaleChanged) {
@@ -3169,11 +3336,8 @@ onMounted(async () => {
 onUnmounted(() => {
   resizeObserver?.disconnect()
   window.removeEventListener('keydown', handleDrawKeydown)
-  if (preloadTimer) {
-    clearTimeout(preloadTimer)
-    preloadTimer = null
-  }
-  preloadRunId += 1
+  // 卸载（含多图切换页导致子图 remount）时取消预加载，中止在途预取、释放并发名额。
+  cancelPreload()
   if (canvasRef.value) d3.select(canvasRef.value).on('.zoom', null)
 })
 

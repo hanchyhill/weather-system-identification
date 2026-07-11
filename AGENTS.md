@@ -2,29 +2,48 @@
 
 ## Project Structure & Module Organization
 
-This repository contains Python and Jupyter workflows for weather system identification. Core analysis code lives in `src/`: `src/trough.py` contains reusable trough-detection functions, while `src/trough.ipynb` and `src/jet_v2.ipynb` are exploratory or runnable notebooks. Tropical cyclone locator work is under `src/ty-locator/` with notebooks such as `locator.ipynb` and `detect_TC_location.ipynb`. Input/output data should stay in `data/` or `demo/`; generated files such as `.nc`, `.png`, `.svg`, and PDFs are ignored by Git.
+This repository identifies weather systems from ECMWF NetCDF forecast data and visualizes the resulting products. It has two main parts:
+
+- `src/` contains Python workflows. `trough.py` and `jet.py` identify troughs and jet axes; `vortex_center.py`, `vortex_warm_core.py`, and `vortex_tracker.py` form the vortex pipeline; `vortex_workflow.py` is its orchestrator. Share helpers through `weather_common.py` and `vortex_common.py` rather than duplicating them.
+- `src/draw/` generates SVG map tiles. Keep its tile projection, bounds, zoom scheme, and the frontend consumer in sync.
+- `src/*.ipynb` and `src/ty-locator/` are exploratory or runnable notebooks; reusable production logic belongs in importable Python modules.
+- `vis_web/` is the Vue 3/Vite frontend. Keep view-state logic in `src/composables/`, map utilities in `src/utils/`, and user-facing components in `src/components/`.
+- `tests/` contains `unittest` test modules named `test_*.py`. Use mocked or temporary data instead of live THREDDS requests.
+- `data/` and `demo/` hold local inputs and generated products. `ifs/` is an independent legacy GRIB/SQLite workflow; do not couple it to the `src/` THREDDS/JSON pipeline.
 
 ## Build, Test, and Development Commands
 
-- `uv sync`: create or update the local environment from `pyproject.toml` and `uv.lock`.
-- `uv run python -m py_compile src/trough.py`: quick syntax check for the Python module.
-- `uv run jupyter notebook`: start Jupyter for the notebooks, if Jupyter is installed in the active environment.
-- `uv add <package>`: add a runtime dependency and update the lockfile.
+Python requires 3.10+ and is managed with `uv`; the frontend uses pnpm and the Node version in `.node-version`.
 
-There is no package build target yet; keep runnable analysis in notebooks or importable functions in `src/*.py`.
+- `uv sync`: install or update the Python environment from `pyproject.toml` and `uv.lock`.
+- `uv run python -m unittest discover`: run the Python test suite.
+- `uv run python -m unittest tests.test_jet`: run one test module.
+- `uv run python -m py_compile src/trough.py src/jet.py`: perform a quick syntax check on edited Python modules.
+- `uv run python src/vortex_workflow.py --init-time YYYYMMDDHH`: run the complete vortex workflow. Individual trough, jet, and SVG workflows use the analogous scripts in `src/`.
+- `uv run jupyter notebook`: start Jupyter when working with a notebook.
+- `pnpm install`, then `pnpm dev` (from `vis_web/`): run the Vite frontend locally.
+- `pnpm build` (from `vis_web/`): produce the frontend build in `vis_web/dist`.
+
+The recognition workflows read an internal THREDDS service, so do not treat a failed end-to-end data request as a test failure when the service is unavailable. Use the test suite and mocked inputs for deterministic verification.
 
 ## Coding Style & Naming Conventions
 
-Use Python 3.10+ and follow PEP 8 conventions: 4-space indentation, `snake_case` for functions and variables, and clear module-level imports. Prefer small, importable functions in `.py` files, then call them from notebooks. Keep domain variables descriptive (`init_time`, `fc_hour`, `latitude`, `longitude`) and document expected units for meteorological quantities. Avoid committing machine-specific server paths unless they are configurable.
+Use Python 3.10+ with PEP 8: four-space indentation, `snake_case`, clear module imports, type hints where they clarify public interfaces, and concise docstrings on reusable functions. Keep domain names consistent: `init_time` is `YYYYMMDDHH`, `fc_hour` is a zero-padded forecast-hour string such as `006`, `target_lev`/`level` is hPa, and coordinate fields are `lat` and `lon`. State meteorological units explicitly.
+
+Preserve data contracts. Internally some algorithms use `[lon, lat]`, but JSON point output must use `{\"lat\": ..., \"lon\": ...}`. Do not change the SVG tile layout or layer manifest without updating its frontend reader. Maintain the vortex pipeline's incremental behavior: existing artifacts are skipped, and downstream warm-core/tracking work runs only when new upstream products warrant it.
+
+For frontend changes, use the existing Vue composition style, keep state changes within the established weather-view composable where appropriate, and avoid adding generated or vendored assets to source control.
 
 ## Testing Guidelines
 
-No automated test suite is currently present. For code changes, at minimum run `uv run python -m py_compile src/trough.py` and execute the affected notebook cells with a small or known dataset. When adding tests, place them under `tests/`, name files `test_*.py`, and prefer deterministic fixtures over live THREDDS data where possible.
+Add or update deterministic `unittest` coverage for Python behavior changes, especially output JSON shape, coordinate order, path construction, and incremental workflow decisions. Prefer `tempfile.TemporaryDirectory` and `unittest.mock.patch` for file and remote-data boundaries. Run the relevant module test plus `unittest discover` when practical, and run `py_compile` for changed Python files.
+
+For frontend changes, run `pnpm build` at minimum. Manually verify the affected map/control interaction with local data when it changes rendering, selection, tile loading, or screenshot behavior.
 
 ## Commit & Pull Request Guidelines
 
-Recent commits use imperative, descriptive messages such as `Add initial project structure...`. Keep the first line concise and explain the main behavior change. Pull requests should include a short summary, affected notebooks/modules, data requirements, and before/after plots or screenshots when visual output changes. Link related issues and note any external data servers needed to reproduce results.
+Use concise, imperative commit subjects that describe the behavior change. Keep unrelated user changes out of commits. Pull requests should state the affected pipeline or UI, data requirements, verification performed, and any changes to generated JSON/SVG contracts. Include before/after screenshots or plots for visible output changes, and note any required external data service or deployment configuration.
 
 ## Security & Configuration Tips
 
-Do not commit credentials, private endpoints, large datasets, or generated outputs. Keep `.env`, `.venv/`, NetCDF files, and rendered figures untracked as configured in `.gitignore`.
+Do not commit credentials, private endpoints, local environment files, large data, or generated outputs. The `.gitignore` excludes NetCDF, image, SVG, PDF, `data/`, `demo/`, virtual environments, and `node_modules/`; keep them untracked. Output locations may differ between local and production environments, so use the repository's output-root helpers and supported environment variables rather than hard-coding machine-specific paths.

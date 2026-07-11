@@ -1,10 +1,13 @@
 <script setup>
-import { RotateCcw } from 'lucide-vue-next'
+import { Camera, Crop, Monitor, RotateCcw } from 'lucide-vue-next'
 import {
   NButton,
+  NPopover,
   NTooltip
 } from 'naive-ui'
+import { ref } from 'vue'
 
+import { useScreenshot } from '../composables/useScreenshot'
 import { useWeatherViewContext } from '../context/weatherViewContext'
 import DrawingToolbar from './DrawingToolbar.vue'
 import ElementSelector from './ElementSelector.vue'
@@ -55,6 +58,31 @@ const {
   shellRef,
   zoomTransform
 } = viewContext
+
+// 截图工具：范围/剪贴板/下载逻辑封装在 useScreenshot 中，按面板独立运行。
+const showScreenshotMenu = ref(false)
+const {
+  selecting: screenshotSelecting,
+  toast: screenshotToast,
+  marqueeStyle: screenshotMarqueeStyle,
+  captureFull,
+  startRegion,
+  onOverlayPointerDown: onScreenshotPointerDown
+} = useScreenshot({
+  canvasRef,
+  shellRef,
+  getMeta: () => ({ initTime: initTime.value, fcHour: fcHour.value, level: level.value })
+})
+
+function captureFullView() {
+  showScreenshotMenu.value = false
+  captureFull()
+}
+
+function captureRegionView() {
+  showScreenshotMenu.value = false
+  startRegion()
+}
 </script>
 
 <template>
@@ -72,14 +100,51 @@ const {
         </template>
         <span>{{ level === 'surface' ? '地面' : `${level} hPa` }}</span>
       </div>
-      <n-tooltip trigger="hover">
-        <template #trigger>
-          <n-button size="small" tertiary circle @click="resetView">
-            <RotateCcw :size="16" />
-          </n-button>
-        </template>
-        重置视图
-      </n-tooltip>
+      <div class="toolbar-actions">
+        <n-popover
+          v-if="!compact"
+          trigger="manual"
+          :show="showScreenshotMenu"
+          placement="bottom-end"
+          :show-arrow="false"
+          @clickoutside="showScreenshotMenu = false"
+        >
+          <template #trigger>
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-button
+                  size="small"
+                  tertiary
+                  circle
+                  :type="screenshotSelecting ? 'primary' : 'default'"
+                  @click="showScreenshotMenu = !showScreenshotMenu"
+                >
+                  <Camera :size="16" />
+                </n-button>
+              </template>
+              截图
+            </n-tooltip>
+          </template>
+          <div class="screenshot-menu">
+            <button type="button" class="screenshot-menu-item" @click="captureFullView">
+              <Monitor :size="15" />
+              <span>整个可视区域</span>
+            </button>
+            <button type="button" class="screenshot-menu-item" @click="captureRegionView">
+              <Crop :size="15" />
+              <span>框选指定区域</span>
+            </button>
+          </div>
+        </n-popover>
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button size="small" tertiary circle @click="resetView">
+              <RotateCcw :size="16" />
+            </n-button>
+          </template>
+          重置视图
+        </n-tooltip>
+      </div>
     </div>
 
     <ForecastSlider v-if="!compact" />
@@ -158,6 +223,103 @@ const {
         <span>涡度 {{ formatNumber(hoverLine.attributes?.avg_vorticity, 2) }}</span>
         <span>风速 {{ formatNumber(hoverLine.attributes?.avg_wind_speed, 2) }} m/s</span>
       </div>
+
+      <div
+        v-if="screenshotSelecting"
+        class="screenshot-overlay"
+        @pointerdown="onScreenshotPointerDown"
+        @contextmenu.prevent
+      >
+        <div class="screenshot-marquee" :style="screenshotMarqueeStyle" />
+        <div class="screenshot-hint">拖拽框选截图区域，按 Esc 取消</div>
+      </div>
+
+      <div v-if="screenshotToast" class="screenshot-toast">{{ screenshotToast }}</div>
     </div>
   </section>
 </template>
+
+<style scoped>
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.screenshot-menu {
+  display: grid;
+  gap: 4px;
+  min-width: 168px;
+}
+
+.screenshot-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid #d7dee7;
+  border-radius: 8px;
+  background: #fff;
+  color: #384456;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.screenshot-menu-item:hover {
+  border-color: #1f7a8c;
+  background: rgba(31, 122, 140, 0.08);
+  color: #16414a;
+}
+
+.screenshot-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  cursor: crosshair;
+  background: rgba(15, 23, 42, 0.12);
+  user-select: none;
+  touch-action: none;
+}
+
+.screenshot-marquee {
+  position: absolute;
+  border: 1.5px dashed #1f7a8c;
+  background: rgba(31, 122, 140, 0.12);
+  box-shadow: 0 0 0 100vmax rgba(15, 23, 42, 0.28);
+  pointer-events: none;
+}
+
+.screenshot-hint {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.82);
+  color: #f8fafc;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.screenshot-toast {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 21;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(31, 122, 140, 0.94);
+  color: #fff;
+  font-size: 13px;
+  white-space: nowrap;
+  box-shadow: 0 10px 24px rgba(22, 33, 47, 0.16);
+  pointer-events: none;
+}
+</style>

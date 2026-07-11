@@ -1,8 +1,9 @@
 <script setup>
-import { ChevronLeft, ChevronRight, Pencil, Plus, Save, Settings, Trash2, X } from 'lucide-vue-next'
+import { Camera, ChevronLeft, ChevronRight, Pencil, Plus, Save, Settings, Trash2, X } from 'lucide-vue-next'
 import { NButton, NButtonGroup, NInput, NModal, NPopover, NSelect, NTooltip } from 'naive-ui'
 import { computed, reactive, ref, watch } from 'vue'
 
+import { useScreenshot } from '../composables/useScreenshot'
 import { useWeatherViewContext } from '../context/weatherViewContext'
 import ElementSelector from './ElementSelector.vue'
 import ForecastSlider from './ForecastSlider.vue'
@@ -128,6 +129,124 @@ const syncState = reactive({
   cursor: null,
   zoom: null
 })
+
+// 多图截图：分别读取各子图 canvas，按屏幕上的网格布局合成到一张大图，
+// 并将各子图的标题文字额外绘制到对应表头区域（避免 canvas 与 DOM 混合栅格化的复杂性）。
+const gridRef = ref(null)
+const {
+  toast: screenshotToast,
+  exportCanvas
+} = useScreenshot({
+  getMeta: () => ({ initTime: multiMapPanels.value[0]?.initTime })
+})
+
+// 读取子图工具栏上实际显示的信息文本（标题、时效、有效时间、层次）。
+function panelHeaderText(toolbarEl, fallback) {
+  const infoEl = toolbarEl?.querySelector(':scope > div')
+  if (!infoEl) return fallback
+  const text = Array.from(infoEl.children)
+    .map((child) => child.textContent.trim())
+    .filter(Boolean)
+    .join('  ')
+  return text || fallback
+}
+
+function buildCompositeCanvas(gridEl) {
+  const gridRect = gridEl.getBoundingClientRect()
+  if (!gridRect.width || !gridRect.height) return null
+
+  // 使用完整设备像素比，使子画布可按原生分辨率 1:1 贴入，保持与屏幕一致的清晰度。
+  const scale = window.devicePixelRatio || 1
+  const out = document.createElement('canvas')
+  out.width = Math.round(gridRect.width * scale)
+  out.height = Math.round(gridRect.height * scale)
+  const ctx = out.getContext('2d')
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+
+  const panelEls = gridEl.querySelectorAll('.multi-map-panel')
+
+  // 第一遍：底色、表头、标题文字、无效占位（在 CSS 像素坐标系下绘制）。
+  ctx.save()
+  ctx.scale(scale, scale)
+  ctx.textAlign = 'left'
+  ctx.fillStyle = '#c8d2dd'
+  ctx.fillRect(0, 0, gridRect.width, gridRect.height)
+
+  panelEls.forEach((panelEl, index) => {
+    const panelRect = panelEl.getBoundingClientRect()
+    const px = panelRect.left - gridRect.left
+    const py = panelRect.top - gridRect.top
+    const fallbackTitle = multiMapPanels.value[index]?.title || ''
+
+    ctx.fillStyle = '#eef2f6'
+    ctx.fillRect(px, py, panelRect.width, panelRect.height)
+
+    // 表头：优先复现工具栏（有效子图），否则复用无效子图的 header。
+    const headerEl = panelEl.querySelector('.toolbar')
+      || panelEl.querySelector('.multi-map-invalid-panel > header')
+    let contentTop = py
+    if (headerEl) {
+      const headerRect = headerEl.getBoundingClientRect()
+      const hx = headerRect.left - gridRect.left
+      const hy = headerRect.top - gridRect.top
+      contentTop = hy + headerRect.height
+
+      ctx.fillStyle = '#f7f9fb'
+      ctx.fillRect(hx, hy, headerRect.width, headerRect.height)
+
+      const title = panelHeaderText(panelEl.querySelector('.toolbar'), fallbackTitle)
+      if (title) {
+        ctx.fillStyle = '#172033'
+        ctx.font = '600 13px Inter, "Segoe UI", Arial, sans-serif'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(title, hx + 12, hy + headerRect.height / 2, Math.max(0, headerRect.width - 24))
+      }
+
+      ctx.strokeStyle = '#c8d2dd'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(hx, hy + headerRect.height - 0.5)
+      ctx.lineTo(hx + headerRect.width, hy + headerRect.height - 0.5)
+      ctx.stroke()
+    }
+
+    const canvasEl = panelEl.querySelector('canvas')
+    if (!canvasEl || !canvasEl.width || !canvasEl.height) {
+      // 无效子图占位提示。
+      ctx.fillStyle = '#7a8698'
+      ctx.font = '500 13px Inter, "Segoe UI", Arial, sans-serif'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText('该时效无效', px + panelRect.width / 2, contentTop + (panelRect.bottom - gridRect.top - contentTop) / 2)
+      ctx.textAlign = 'left'
+    }
+  })
+  ctx.restore()
+
+  // 第二遍：将各子画布贴入合成图对应的单元格区域。子图 canvas 的原生分辨率可能低于
+  // 合成图的设备像素（compact 固定 1×，而合成图按完整 devicePixelRatio），故按目标 CSS
+  // 尺寸 × scale 显式指定绘制宽高，让浏览器缩放贴合单元格，保持与屏幕一致的视觉大小。
+  panelEls.forEach((panelEl) => {
+    const canvasEl = panelEl.querySelector('canvas')
+    if (!canvasEl || !canvasEl.width || !canvasEl.height) return
+    const cr = canvasEl.getBoundingClientRect()
+    const dx = Math.round((cr.left - gridRect.left) * scale)
+    const dy = Math.round((cr.top - gridRect.top) * scale)
+    const dw = Math.round(cr.width * scale)
+    const dh = Math.round(cr.height * scale)
+    ctx.drawImage(canvasEl, dx, dy, dw, dh)
+  })
+
+  return out
+}
+
+async function captureMultiMap() {
+  const gridEl = gridRef.value
+  if (!gridEl) return
+  const composite = buildCompositeCanvas(gridEl)
+  if (composite) await exportCanvas(composite, `multi-${multiMapMode.value || 'map'}`)
+}
 
 function resetSyncState() {
   syncState.cursor = null
@@ -345,10 +464,21 @@ watch(multiMapPanels, (panels) => {
           </n-button-group>
         </div>
       </div>
-      <n-button size="small" secondary @click="close">
-        <template #icon><X :size="15" /></template>
-        退出多图
-      </n-button>
+      <div class="multi-map-header-actions">
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button size="small" secondary @click="captureMultiMap">
+              <template #icon><Camera :size="15" /></template>
+              截图
+            </n-button>
+          </template>
+          截取全部子图（含标题）
+        </n-tooltip>
+        <n-button size="small" secondary @click="close">
+          <template #icon><X :size="15" /></template>
+          退出多图
+        </n-button>
+      </div>
     </header>
 
     <ForecastSlider />
@@ -517,7 +647,7 @@ watch(multiMapPanels, (panels) => {
       </template>
     </n-modal>
 
-    <div class="multi-map-grid" :style="gridStyle">
+    <div ref="gridRef" class="multi-map-grid" :style="gridStyle">
       <MultiMapPanel
         v-for="(panel, index) in multiMapPanels"
         :key="panel.id"
@@ -526,5 +656,32 @@ watch(multiMapPanels, (panels) => {
         @activate="activateElementPanel(index)"
       />
     </div>
+
+    <div v-if="screenshotToast" class="multi-map-screenshot-toast">{{ screenshotToast }}</div>
   </section>
 </template>
+
+<style scoped>
+.multi-map-header-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.multi-map-screenshot-toast {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3000;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(31, 122, 140, 0.94);
+  color: #fff;
+  font-size: 13px;
+  white-space: nowrap;
+  box-shadow: 0 10px 24px rgba(22, 33, 47, 0.16);
+  pointer-events: none;
+}
+</style>

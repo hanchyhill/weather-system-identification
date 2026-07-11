@@ -3,6 +3,10 @@ const DB_VERSION = 1
 const STORE_NAME = 'svg_images'
 // 缓存有效期 72 小时（3 天）
 const EXPIRY_MS = 72 * 60 * 60 * 1000
+// 内存层 LRU 上限：单例缓存被单图与全部子图共用，长时间运行可能持续累积已解码的
+// Image 对象（每张瓦片占用显存/内存），故对内存 Map 设上限并按最近使用淘汰；
+// IndexedDB 仍保留（受 72h 过期约束），被淘汰的条目下次命中时从库里重新解码即可。
+const MEMORY_LIMIT = 600
 
 let dbPromise = null
 
@@ -68,6 +72,7 @@ function dataUrlToImage(value) {
 export class SvgImageCache {
   constructor() {
     this.memory = new Map()
+    this.pendingPersist = new Set()
     this.stats = {
       hits: 0,
       misses: 0,
@@ -75,10 +80,24 @@ export class SvgImageCache {
     }
   }
 
+  // 写入内存并维护 LRU 顺序：Map 迭代顺序即插入顺序，重新 set 前先 delete 可把键移到“最新”，
+  // 超出上限时淘汰最旧（迭代到的第一个）键。
+  touchMemory(key, image) {
+    if (this.memory.has(key)) this.memory.delete(key)
+    this.memory.set(key, image)
+    while (this.memory.size > MEMORY_LIMIT) {
+      const oldest = this.memory.keys().next().value
+      if (oldest === undefined) break
+      this.memory.delete(oldest)
+    }
+  }
+
   async get(key) {
     if (this.memory.has(key)) {
+      const image = this.memory.get(key)
+      this.touchMemory(key, image)
       this.stats.hits += 1
-      return this.memory.get(key)
+      return image
     }
 
     const db = await openDatabase()
@@ -101,7 +120,7 @@ export class SvgImageCache {
 
         try {
           const image = await dataUrlToImage(item.value)
-          this.memory.set(key, image)
+          this.touchMemory(key, image)
           this.stats.hits += 1
           resolve(image)
         } catch {
@@ -135,10 +154,31 @@ export class SvgImageCache {
   }
 
   async set(key, image) {
-    this.memory.set(key, image)
+    // 立即写入内存（供渲染与跨子图复用），把昂贵的 PNG 编码 + IndexedDB 写入推迟到空闲期，
+    // 从而不阻塞渲染关键路径。持久化仅用于跨会话复用，延迟完成不影响本次渲染。
+    this.touchMemory(key, image)
+    this.schedulePersist(key, image)
+    return true
+  }
+
+  // 空闲期把图片编码为 PNG 并写入 IndexedDB；用 requestIdleCallback 让位于渲染/交互。
+  schedulePersist(key, image) {
+    if (this.pendingPersist.has(key)) return
+    this.pendingPersist.add(key)
+    const run = () => {
+      this.pendingPersist.delete(key)
+      this.persistToDb(key, image)
+    }
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(run, { timeout: 3000 })
+    } else {
+      setTimeout(run, 0)
+    }
+  }
+
+  async persistToDb(key, image) {
     const db = await openDatabase()
     if (!db) return false
-
     try {
       const value = await imageToDataUrl(image)
       return new Promise((resolve) => {
@@ -164,3 +204,7 @@ export class SvgImageCache {
     }
   }
 }
+
+// 全局共享单例：单图与全部多图子图共用同一内存缓存，消除同一瓦片在多个子图间的
+// 重复网络/解码开销，并让预加载天然去重。生命周期与页面一致（不随某个视图实例卸载而释放）。
+export const sharedSvgImageCache = new SvgImageCache()

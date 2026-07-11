@@ -9,6 +9,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
+from cold_front import run_cold_front_identification
 from jet import main as run_jet
 from trough import main as run_trough
 from vortex_workflow import run_vortex_workflow
@@ -65,7 +66,7 @@ def run_cycle(
     save_json: bool = True,
     show_progress: bool = True,
 ) -> dict[str, bool]:
-    """Run jet, trough, and vortex workflows for the latest base time."""
+    """Run jet, trough, cold-front, and vortex workflows for the latest base time."""
     if output_root is None:
         output_root = default_output_root()
     init_time = calLatestBaseTime()
@@ -85,6 +86,16 @@ def run_cycle(
         "trough": _run_job(
             "trough.py",
             run_trough,
+            init_time=init_time,
+            output_root=output_root,
+            source=source,
+            save_image=save_image,
+            save_json=save_json,
+            show_progress=show_progress,
+        ),
+        "cold_front": _run_job(
+            "cold_front.py",
+            run_cold_front_identification,
             init_time=init_time,
             output_root=output_root,
             source=source,

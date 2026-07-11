@@ -50,6 +50,14 @@ export default defineConfig({
   server: {
     fs: {
       allow: [repoRoot]
+    },
+    // 开发环境把 /api 转发到本地 push_server（uv run python src/push/push_server.py）。
+    // 生产由 nginx 反代，无需此项。
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8090',
+        changeOrigin: true
+      }
     }
   }
 })

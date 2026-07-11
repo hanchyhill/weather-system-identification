@@ -1,14 +1,26 @@
 <script setup>
 import { PanelsTopLeft } from 'lucide-vue-next'
 import { NPopover } from 'naive-ui'
+import { computed } from 'vue'
 
 import { useWeatherViewContext } from '../context/weatherViewContext'
 
 const { multiMapModeOptions, openMultiMap } = useWeatherViewContext()
+
+const modeGroups = computed(() => [
+  {
+    label: '单轴模式',
+    options: multiMapModeOptions.filter((option) => option.group === 'single')
+  },
+  {
+    label: '多轴模式',
+    options: multiMapModeOptions.filter((option) => option.group === 'dual')
+  }
+].filter((group) => group.options.length))
 </script>
 
 <template>
-  <n-popover trigger="hover" placement="right-start" :show-arrow="false" style="width: 156px;">
+  <n-popover trigger="hover" placement="right-start" :show-arrow="false" style="width: auto;">
     <template #trigger>
       <button type="button" class="mm-fab" aria-label="多图模式" title="多图模式">
         <PanelsTopLeft :size="20" />
@@ -16,15 +28,17 @@ const { multiMapModeOptions, openMultiMap } = useWeatherViewContext()
     </template>
 
     <div class="mm-menu">
-      <strong>多图模式</strong>
-      <button
-        v-for="option in multiMapModeOptions"
-        :key="option.value"
-        type="button"
-        @click="openMultiMap(option.value)"
-      >
-        {{ option.label }}
-      </button>
+      <section v-for="group in modeGroups" :key="group.label" class="mm-mode-group">
+        <span>{{ group.label }}</span>
+        <button
+          v-for="option in group.options"
+          :key="option.value"
+          type="button"
+          @click="openMultiMap(option.value)"
+        >
+          {{ option.label }}
+        </button>
+      </section>
     </div>
   </n-popover>
 </template>
@@ -55,16 +69,29 @@ const { multiMapModeOptions, openMultiMap } = useWeatherViewContext()
 
 .mm-menu {
   display: grid;
-  gap: 6px;
+  grid-template-columns: repeat(2, max-content);
+  gap: 10px;
 }
 
-.mm-menu strong {
-  padding: 2px 4px 6px;
-  color: #172033;
-  font-size: 13px;
+.mm-mode-group {
+  display: grid;
+  gap: 3px;
+  justify-items: start;
+}
+
+.mm-mode-group + .mm-mode-group {
+  padding-left: 10px;
+  border-left: 1px solid #e2e8f0;
+}
+
+.mm-mode-group > span {
+  padding: 0 4px 2px;
+  color: #7a8698;
+  font-size: 11px;
 }
 
 .mm-menu button {
+  width: max-content;
   min-height: 30px;
   border: 1px solid transparent;
   border-radius: 5px;

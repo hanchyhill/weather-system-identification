@@ -221,7 +221,7 @@ input {
 
 .system-tab-list {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   padding: 3px;
   border: 1px solid #d5dde7;
@@ -248,6 +248,13 @@ input {
 .option-list {
   display: grid;
   gap: 10px;
+}
+
+.panel-note {
+  margin: 0;
+  color: #66778a;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .option-list label {

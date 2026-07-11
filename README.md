@@ -81,6 +81,15 @@ weather-system-identification/
 │   ├── vortex_workflow.py        # 涡旋三段式总入口脚本
 │   └── ty-locator/
 │       └── locator.ipynb         # 台风定位算法
+├── vis_web/                      # Vue 可视化前端（含 Service Worker 缓存/预取）
+│   ├── public/sw.js             # Service Worker：瓦片缓存 + 分级预取 + Web Push 处理
+│   └── src/                     # 组件、composables、utils（swClient / pushClient / initTime）
+├── server/                       # Node 推送后端（Express + web-push，与绘图流水线解耦）
+│   ├── server.js                # 订阅服务：VAPID 公钥 / 订阅 / 退订
+│   ├── pushSchedule.js          # 30 分钟轮询：新起报时次即推一次
+│   └── generateVapidKeys.js     # VAPID 密钥生成
+├── ecosystem.weather-business.config.js  # PM2 应用定义（含 push-server / push-schedule）
+├── nginx_nwp.conf               # nginx：/data 与 /api 反向代理
 ├── 20228-tropical-cyclone-activities-ecmwf.pdf     # 热带气旋活动研究文档
 ├── ECMWF热带气旋追踪算法技术细节与跨机构比较.pdf    # 算法技术文档
 ├── Schumacher_etal_2009.pdf      # 相关学术文献
@@ -603,6 +612,112 @@ uv run python src/vortex_center.py --init-time 2026062900 --fc-hours 000 006 --l
 uv run python src/vortex_warm_core.py --init-time 2026062900 --fc-hours 000 006
 uv run python src/vortex_tracker.py --init-time 2026062900 --fc-hours 000 006
 ```
+
+## 前端加速与实时推送子系统 (Service Worker + Web Push)
+
+前端在 SVG 瓦片加载之上叠加了一层 Service Worker 缓存与后台预取，并配套一个独立的
+Node 推送后端，用于在新起报时次就绪时通知用户、后台预热数据。该子系统与 Python 分析/
+绘图流水线**完全解耦**，可独立启停。
+
+### 组成
+
+**前端（`vis_web/`）**
+
+| 文件 | 作用 |
+| --- | --- |
+| `public/sw.js` | Service Worker：拦截 `/data/products` 下的 `.svg`（cache-first）与 `manifest.json`（network-first）；按 z0→z1→z2 分级预取，受 `navigator.storage` 配额软上限约束、可被新指令中断；内置 `push` / `notificationclick` 处理 |
+| `src/utils/swClient.js` | 注册 SW、下发/取消预取；非安全上下文自动降级 |
+| `src/utils/initTime.js` | `calLatestBaseTime` / `recentInitTimes(2)`，供开页 catch-up 预取用 |
+| `src/utils/pushClient.js` | Web Push 能力检测、通知授权、订阅/退订，与后端交换订阅信息 |
+| `src/components/PushSubscribeButton.vue` | 右上角「订阅实时更新」按钮（不支持 / 被拒 / 已订阅多态） |
+
+`main.js` 在应用启动及标签页重新可见时，会预取最近两个起报时次（最新 + 上一时次）。
+
+**推送后端（`server/`，Node + Express + `web-push`）**
+
+| 文件 | 作用 |
+| --- | --- |
+| `config.js` | 路径与 VAPID 配置（env 覆盖，输出根逻辑与 `weather_common.default_output_root` 一致） |
+| `subscriptionStore.js` | 订阅信息的 JSON 文件存储（按 endpoint 去重） |
+| `pushSender.js` | `sendToAll` / `detectLatestInit` / `maybeNotifyNewInit`（按 init_time 去重、清理失效订阅） |
+| `server.js` | Express 路由：`/api/push/vapid-public-key`、`/subscribe`、`/unsubscribe` |
+| `pushSchedule.js` | 独立轮询脚本，默认每 30 分钟检查一次，发现新起报时次即推一次 |
+| `generateVapidKeys.js` | 生成 VAPID 密钥对 |
+
+### 前置条件
+
+- **必须为安全上下文**：Service Worker、Push API、剪贴板 API 均只在 `https` 或
+  `localhost` 下可用；用局域网 IP + HTTP 访问会自动降级为无 SW / 无推送（不报错）。
+  本地开发请用 `http://localhost:5173`，生产使用 https。
+- **客户端需能出外网**：Web Push 经浏览器厂商推送服务（Chrome→FCM、Firefox→Mozilla）
+  投递，客户端须能连到该服务，否则收不到推送。
+- Chrome 强制 `userVisibleOnly`：每条 push 必弹一条系统通知。后端只在**新起报时次**
+  推一次（约每个 00/12 UTC 起报一次），噪音可控。
+
+### 部署与运行
+
+```bash
+# 1. 安装推送后端依赖
+cd server && pnpm install            # express, web-push
+
+# 2. 生成 VAPID 密钥（先设置真实联系方式，生产写入 pm2 env）
+export WEATHER_VAPID_SUBJECT="mailto:you@your-domain"
+node generateVapidKeys.js            # 写出 <output_root>/push/vapid_keys.json
+
+# 3. 本地联调
+node server.js                       # 监听 127.0.0.1:8090
+cd ../vis_web && pnpm dev            # http://localhost:5173，/api 经 vite proxy 转发到 8090
+
+# 4. 前端构建
+cd vis_web && pnpm build
+
+# 5. 生产：PM2 拉起 weather-push-server 与 weather-push-schedule
+pm2 reload ecosystem.weather-business.config.js
+```
+
+生产环境需在 nginx（`nginx_nwp.conf`）的 `location /data/` 之后增加反向代理：
+
+```nginx
+    location /api/ {
+        proxy_pass http://127.0.0.1:8090;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+```
+
+### 相关环境变量
+
+| 变量 | 说明 | 默认 |
+| --- | --- | --- |
+| `WEATHER_OUTPUT_ROOT` | 输出根目录 | Windows `./data`，Linux `/data/weather_vis` |
+| `WEATHER_PRODUCTS_ROOT` | SVG 产品根目录 | `<output_root>/products` |
+| `WEATHER_PUSH_ROOT` | 推送状态（密钥/订阅/去重标记）目录 | `<output_root>/push` |
+| `WEATHER_VAPID_SUBJECT` | VAPID 声明的 `sub`（`mailto:` 或 `https:`） | `mailto:admin@example.com` |
+| `WEATHER_PUSH_PORT` | 订阅服务监听端口 | `8090` |
+
+### 数据流
+
+新起报时次生成 → `pushSchedule` 轮询发现 products 里最新 init 的 `manifest.json` 为新时次
+→ `sendToAll({init_time})` → 浏览器推送服务唤醒 `sw.js` 的 `push` → 弹一条通知并预取该起报
+（页面关闭也生效）。同一起报时次仅推一次（去重标记 `last_pushed.json`）。
+
+### 验证
+
+```bash
+# 后端可启动 + 生成密钥
+cd server && pnpm install && node generateVapidKeys.js && node server.js
+
+# 前端可构建
+cd vis_web && pnpm build
+
+# 手动发一条测试推送（浏览器已订阅时应弹通知并触发预取）
+cd server && node -e "import('./pushSender.js').then(m=>m.sendToAll({init_time:'2026062900'}).then(r=>console.log(r)))"
+```
+
+浏览器侧：`localhost` 打开后点右上角「订阅实时更新」→ 授权 → DevTools → Application →
+Service Workers / Push 可见订阅，`<push_root>/subscriptions.json` 出现一条记录。
 
 ## 学术背景
 

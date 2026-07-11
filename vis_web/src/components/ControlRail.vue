@@ -48,6 +48,7 @@ const {
   showHistoricalVortexTracks,
   showJetArrowHeads,
   showJetAxes,
+  showColdFronts,
   showRawPoints,
   showSvgLayer,
   showTileDebug,
@@ -64,6 +65,7 @@ const {
   troughShearFilters,
   troughShearOptions,
   visibleJetAxisCount,
+  visibleColdFrontCount,
   visibleTroughCount,
   visibleVortexCenterCount,
   visibleVortexTrackCount,
@@ -238,6 +240,14 @@ const {
         </div>
       </div>
 
+      <div v-else-if="activeSystemTab === 'coldFront'" class="tab-panel">
+        <div class="option-row">
+          <span>显示冷锋</span>
+          <n-switch v-model:value="showColdFronts" size="small" />
+        </div>
+        <p class="panel-note">在 850、925、950、1000 hPa 加载温度锋区识别结果，并以蓝线与三角符号绘制。</p>
+      </div>
+
       <div v-else-if="activeSystemTab === 'vortex'" class="tab-panel">
         <div class="option-row">
           <span>涡旋中心 L</span>
@@ -311,11 +321,13 @@ const {
       <div><span>SVG</span><n-tag size="small" :bordered="false">{{ loadingState.svg }}</n-tag></div>
       <div><span>槽线</span><n-tag size="small" :bordered="false">{{ loadingState.trough }}</n-tag></div>
       <div><span>急流轴</span><n-tag size="small" :bordered="false">{{ loadingState.jet }}</n-tag></div>
+      <div><span>冷锋</span><n-tag size="small" :bordered="false">{{ loadingState.coldFront }}</n-tag></div>
       <div><span>涡旋中心</span><n-tag size="small" :bordered="false">{{ loadingState.vortexCenters }}</n-tag></div>
       <div><span>涡旋轨迹</span><n-tag size="small" :bordered="false">{{ isVortexTrackLevel ? loadingState.vortexTracks : '该层不显示轨迹' }}</n-tag></div>
       <div><span>图层状态</span><n-tag size="small" :bordered="false">{{ layerStatus }}</n-tag></div>
       <div><span>槽线数量</span><strong>{{ visibleTroughCount }}</strong></div>
       <div><span>急流轴数量</span><strong>{{ visibleJetAxisCount }}</strong></div>
+      <div><span>冷锋数量</span><strong>{{ visibleColdFrontCount }}</strong></div>
       <div><span>中心数量</span><strong>{{ visibleVortexCenterCount }}</strong></div>
       <div><span>轨迹数量</span><strong>{{ visibleVortexTrackCount }}</strong></div>
     </section>

@@ -1,0 +1,16 @@
+{
+  "name": "weather-push-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Web Push 后端：订阅服务 + 新起报时次轮询推送（与绘图流水线解耦）",
+  "scripts": {
+    "start": "node server.js",
+    "schedule": "node pushSchedule.js --run-immediately --interval-minutes 30",
+    "gen-keys": "node generateVapidKeys.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "web-push": "^3.6.7"
+  }
+}
