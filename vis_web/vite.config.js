@@ -51,11 +51,11 @@ export default defineConfig({
     fs: {
       allow: [repoRoot]
     },
-    // 开发环境把 /api 转发到本地 push_server（uv run python src/push/push_server.py）。
-    // 生产由 nginx 反代，无需此项。
+    // 开发环境把 /api 转发到本地 push 后端（node server/server.js）。
+    // 端口须与 server/.env 的 WEATHER_PUSH_PORT 一致；生产由 nginx 反代，无需此项。
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8090',
+        target: 'http://127.0.0.1:49173',
         changeOrigin: true
       }
     }

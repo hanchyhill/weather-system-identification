@@ -48,5 +48,5 @@ export function vapidSubject() {
 }
 
 export function serverPort() {
-  return Number(process.env.WEATHER_PUSH_PORT || 8090)
+  return Number(process.env.WEATHER_PUSH_PORT || 49173)
 }

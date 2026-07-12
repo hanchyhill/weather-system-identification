@@ -446,6 +446,13 @@ input {
 
 .panel-toggle-anchor {
   position: absolute;
+  top: 254px;
+  left: 14px;
+  z-index: 5;
+}
+
+.map-view-selector-anchor {
+  position: absolute;
   top: 206px;
   left: 14px;
   z-index: 5;

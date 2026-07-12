@@ -12,6 +12,7 @@ import { useWeatherViewContext } from '../context/weatherViewContext'
 import DrawingToolbar from './DrawingToolbar.vue'
 import ElementSelector from './ElementSelector.vue'
 import ForecastSlider from './ForecastSlider.vue'
+import MapViewSelector from './MapViewSelector.vue'
 import MultiMapSelector from './MultiMapSelector.vue'
 import MultiTimeSelector from './MultiTimeSelector.vue'
 
@@ -182,6 +183,10 @@ function captureRegionView() {
 
       <div v-if="!compact" class="drawing-toolbar-anchor">
         <DrawingToolbar />
+      </div>
+
+      <div v-if="!compact" class="map-view-selector-anchor">
+        <MapViewSelector />
       </div>
 
       <div v-if="!compact" class="panel-toggle-anchor">

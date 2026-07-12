@@ -1,11 +1,10 @@
 <script setup>
-// 实时更新订阅：ControlRail 顶部的触发按钮 + 弹窗。
-// 弹窗内提供：订阅开关，以及预取策略（瓦片层次 / 预加载要素 / 气压层）。
-// 非安全上下文（局域网 IP + HTTP）下按钮禁用并提示需 https。
-import { Bell } from 'lucide-vue-next'
-import { NButton, NCard, NCheckbox, NCheckboxGroup, NModal, NSwitch, NTooltip } from 'naive-ui'
+// 全局设置入口：实时更新订阅/预取策略与本地配置备份。
+import { Download, Settings, Upload } from 'lucide-vue-next'
+import { NButton, NCard, NCheckbox, NCheckboxGroup, NModal, NSwitch, NTabPane, NTabs, NTooltip } from 'naive-ui'
 import { onMounted, ref } from 'vue'
 
+import { exportSavedConfigurations, importSavedConfigurations } from '../utils/configBackup'
 import { LAYER_TYPE_OPTIONS, DEFAULT_UPPER_LEVELS as LEVEL_OPTIONS } from '../utils/elementSelectorConfig'
 import { recentInitTimes } from '../utils/initTime'
 import {
@@ -30,6 +29,10 @@ const subscribed = ref(false)
 const permission = ref('default')
 const busy = ref(false)
 const message = ref('')
+const activeTab = ref('updates')
+const fileInput = ref(null)
+const backupMessage = ref('')
+const importedBackup = ref(false)
 
 // 预取策略（本地副本，弹窗内编辑，「保存并应用」时落盘 + 下发）
 const zLevels = ref([...DEFAULT_PREFETCH_OPTIONS.zLevels])
@@ -95,6 +98,42 @@ function applySettings() {
   prefetchInitTimes(recentInitTimes(2), options) // 立即按新策略预取
   message.value = '预取策略已保存并开始加载'
 }
+
+function exportConfigurations() {
+  const backup = exportSavedConfigurations()
+  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  const date = new Date().toISOString().slice(0, 10)
+  link.href = url
+  link.download = `weather-system-config-${date}.json`
+  link.click()
+  URL.revokeObjectURL(url)
+  backupMessage.value = `已导出 ${Object.keys(backup.configurations).length} 项配置`
+}
+
+function openImportPicker() {
+  fileInput.value?.click()
+}
+
+async function importConfigurations(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file) return
+
+  importedBackup.value = false
+  try {
+    const imported = importSavedConfigurations(JSON.parse(await file.text()))
+    backupMessage.value = `已导入 ${imported} 项配置，刷新页面后生效`
+    importedBackup.value = true
+  } catch (error) {
+    backupMessage.value = error instanceof Error ? error.message : '导入配置失败'
+  }
+}
+
+function reloadPage() {
+  window.location.reload()
+}
 </script>
 
 <template>
@@ -105,69 +144,96 @@ function applySettings() {
           size="small"
           tertiary
           circle
-          :type="subscribed ? 'primary' : 'default'"
           @click="openDialog"
         >
-          <Bell :size="16" />
+          <Settings :size="16" />
         </n-button>
       </template>
-      实时更新订阅
+      全局设置
     </n-tooltip>
 
     <n-modal v-model:show="showDialog">
-      <n-card class="push-dialog" title="实时更新订阅" :bordered="false" size="small" role="dialog">
-        <template v-if="!supported">
-          <p class="push-note">当前环境不支持实时推送（需通过 https 或 localhost 访问）。</p>
-        </template>
-        <template v-else>
-          <div class="push-row">
-            <div>
-              <div class="push-row__title">订阅新起报通知</div>
-              <div class="push-row__desc">数据就绪时通知你，并在后台预加载最新起报</div>
+      <n-card class="push-dialog" title="全局设置" :bordered="false" size="small" role="dialog">
+        <n-tabs v-model:value="activeTab" type="line" animated>
+          <n-tab-pane name="updates" tab="实时更新">
+            <template v-if="!supported">
+              <p class="push-note">当前环境不支持实时推送（需通过 https 或 localhost 访问）。</p>
+            </template>
+            <template v-else>
+              <div class="push-row">
+                <div>
+                  <div class="push-row__title">订阅新起报通知</div>
+                  <div class="push-row__desc">数据就绪时通知你，并在后台预加载最新起报</div>
+                </div>
+                <n-switch
+                  :value="subscribed"
+                  :disabled="busy || permission === 'denied'"
+                  @update:value="onToggleSubscription"
+                />
+              </div>
+              <p v-if="permission === 'denied'" class="push-note push-note--warn">
+                通知权限已被拒绝，请在浏览器站点设置里手动允许后重试。
+              </p>
+
+              <div class="push-divider"></div>
+
+              <div class="push-section">
+                <div class="push-section__title">预加载瓦片层次</div>
+                <div class="push-section__desc">层次越高越清晰、数量越多。默认 z0 + z1。</div>
+                <n-checkbox-group v-model:value="zLevels">
+                  <n-checkbox v-for="opt in Z_LEVEL_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                </n-checkbox-group>
+              </div>
+
+              <div class="push-section">
+                <div class="push-section__title">预加载要素</div>
+                <div class="push-section__desc">不勾选表示全部要素。</div>
+                <n-checkbox-group v-model:value="layerTypes" class="push-grid">
+                  <n-checkbox v-for="opt in LAYER_TYPE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                </n-checkbox-group>
+              </div>
+
+              <div class="push-section">
+                <div class="push-section__title">预加载气压层</div>
+                <div class="push-section__desc">不勾选表示全部层次。</div>
+                <n-checkbox-group v-model:value="levels" class="push-grid">
+                  <n-checkbox v-for="opt in LEVEL_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                </n-checkbox-group>
+              </div>
+            </template>
+          </n-tab-pane>
+
+          <n-tab-pane name="backup" tab="配置备份">
+            <div class="backup-section">
+              <div class="backup-section__title">导出配置</div>
+              <p>导出本浏览器中已保存的要素选择器、图层组合、多图配置、地理视图和预取策略。</p>
+              <n-button size="small" type="primary" @click="exportConfigurations">
+                <template #icon><Download :size="15" /></template>
+                导出配置
+              </n-button>
             </div>
-            <n-switch
-              :value="subscribed"
-              :disabled="busy || permission === 'denied'"
-              @update:value="onToggleSubscription"
-            />
-          </div>
-          <p v-if="permission === 'denied'" class="push-note push-note--warn">
-            通知权限已被拒绝，请在浏览器站点设置里手动允许后重试。
-          </p>
 
-          <div class="push-divider"></div>
+            <div class="backup-section">
+              <div class="backup-section__title">导入配置</div>
+              <p>选择此前导出的 JSON 文件。导入会覆盖备份中包含的同类配置。</p>
+              <input ref="fileInput" class="backup-file-input" type="file" accept="application/json,.json" @change="importConfigurations" />
+              <n-button size="small" @click="openImportPicker">
+                <template #icon><Upload :size="15" /></template>
+                导入配置
+              </n-button>
+            </div>
 
-          <div class="push-section">
-            <div class="push-section__title">预加载瓦片层次</div>
-            <div class="push-section__desc">层次越高越清晰、数量越多。默认 z0 + z1。</div>
-            <n-checkbox-group v-model:value="zLevels">
-              <n-checkbox v-for="opt in Z_LEVEL_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
-            </n-checkbox-group>
-          </div>
-
-          <div class="push-section">
-            <div class="push-section__title">预加载要素</div>
-            <div class="push-section__desc">不勾选表示全部要素。</div>
-            <n-checkbox-group v-model:value="layerTypes" class="push-grid">
-              <n-checkbox v-for="opt in LAYER_TYPE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
-            </n-checkbox-group>
-          </div>
-
-          <div class="push-section">
-            <div class="push-section__title">预加载气压层</div>
-            <div class="push-section__desc">不勾选表示全部层次。</div>
-            <n-checkbox-group v-model:value="levels" class="push-grid">
-              <n-checkbox v-for="opt in LEVEL_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
-            </n-checkbox-group>
-          </div>
-        </template>
+            <p v-if="backupMessage" class="backup-message">{{ backupMessage }}</p>
+            <n-button v-if="importedBackup" size="small" type="primary" @click="reloadPage">立即刷新并应用</n-button>
+          </n-tab-pane>
+        </n-tabs>
 
         <template #footer>
           <div class="push-footer">
-            <span class="push-footer__msg">{{ message }}</span>
+            <span class="push-footer__msg">{{ activeTab === 'updates' ? message : '' }}</span>
             <div class="push-footer__actions">
               <n-button size="small" @click="showDialog = false">关闭</n-button>
-              <n-button v-if="supported" size="small" type="primary" @click="applySettings">保存并应用</n-button>
+              <n-button v-if="activeTab === 'updates' && supported" size="small" type="primary" @click="applySettings">保存并应用</n-button>
             </div>
           </div>
         </template>
@@ -257,5 +323,37 @@ function applySettings() {
 .push-footer__actions {
   display: flex;
   gap: 8px;
+}
+
+.backup-section {
+  display: grid;
+  gap: 8px;
+  padding: 12px 0;
+}
+
+.backup-section + .backup-section {
+  border-top: 1px solid #e5e7eb;
+}
+
+.backup-section__title {
+  color: #374151;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.backup-section p,
+.backup-message {
+  margin: 0;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.backup-file-input {
+  display: none;
+}
+
+.backup-message {
+  color: #2563eb;
 }
 </style>

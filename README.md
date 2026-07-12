@@ -670,8 +670,8 @@ pnpm install --prod                  # express, web-push, dotenv
 node generateVapidKeys.js            # 写出 <push_root>/vapid_keys.json
 
 # 3. 本地联调
-node server.js                       # 监听 127.0.0.1:8090
-cd ../vis_web && pnpm dev            # http://localhost:5173，/api 经 vite proxy 转发到 8090
+node server.js                       # 监听 127.0.0.1:49173（端口取自 .env 的 WEATHER_PUSH_PORT）
+cd ../vis_web && pnpm dev            # http://localhost:5173，/api 经 vite proxy 转发到同一端口
 ```
 
 **生产上线**：前端 `dist/` 在本地测试环境构建好后上传到服务器，
@@ -688,11 +688,13 @@ rsync -a vis_web/dist/ user@server:/var/www/html/nwp_weather_system/vis_web/dist
 ./start_weather_business_pm2.sh
 ```
 
-生产环境需在 nginx（`nginx_nwp.conf`）的 `location /data/` 之后增加反向代理：
+生产环境已在 nginx（`nginx_nwp.conf`）的 `location /assets/` 之后内置该反向代理（端口须与
+`server/.env` 的 `WEATHER_PUSH_PORT` 一致）：
 
 ```nginx
+    # 与 server/.env 的 WEATHER_PUSH_PORT 保持一致
     location /api/ {
-        proxy_pass http://127.0.0.1:8090;
+        proxy_pass http://127.0.0.1:49173;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -710,7 +712,7 @@ rsync -a vis_web/dist/ user@server:/var/www/html/nwp_weather_system/vis_web/dist
 | `WEATHER_PRODUCTS_ROOT` | SVG 产品根目录 | `<output_root>/products` |
 | `WEATHER_PUSH_ROOT` | 推送状态（密钥/订阅/去重标记）目录 | `<output_root>/push` |
 | `WEATHER_VAPID_SUBJECT` | VAPID 声明的 `sub`（`mailto:` 或 `https:`） | `mailto:admin@example.com` |
-| `WEATHER_PUSH_PORT` | 订阅服务监听端口 | `8090` |
+| `WEATHER_PUSH_PORT` | 订阅服务监听端口（须与 nginx 反代、vite dev proxy 一致） | `49173` |
 
 ### 数据流
 

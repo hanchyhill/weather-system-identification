@@ -71,6 +71,7 @@ const SHEAR_COLORS = reactive({
 const LAYER_COMBINATION_STORAGE_KEY = 'weather-view-layer-combinations'
 const MULTI_ELEMENT_CONFIGURATION_STORAGE_KEY = 'weather-view-multi-element-configurations'
 const MULTI_ELEMENT_FORECAST_CONFIGURATION_STORAGE_KEY = 'weather-view-multi-element-forecast-configurations'
+const MAP_VIEW_STORAGE_KEY = 'weather-view-saved-map-views'
 const FILL_LAYER_TYPES = new Set(['wind_speed_fill', 'vort_fill', 'rhum_fill', 'surface_speed_fill'])
 const WIND_OVERLAY_LAYER_TYPES = new Set([
   'wind_quiver',
@@ -177,6 +178,7 @@ const selectedLayerTypes = ref(initialLayers)
 const layerCombinationName = ref('默认天气图')
 const activeLayerCombinationName = ref('默认天气图')
 const savedLayerCombinations = ref(loadSavedLayerCombinations())
+const savedMapViews = ref(loadSavedMapViews())
 // 元素选择器（要素表格）配置与当前选中标识。
 const elementConfig = ref(loadElementConfig())
 const activeElementKey = ref('')
@@ -1637,6 +1639,80 @@ function applyDefaultView(animate = false) {
   }
 }
 
+function loadSavedMapViews() {
+  if (typeof window === 'undefined') return []
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(MAP_VIEW_STORAGE_KEY) || '[]')
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .map((view) => {
+        const center = Array.isArray(view?.center) ? view.center.map(Number) : []
+        const k = Number(view?.k)
+        const name = String(view?.name || '').trim()
+        if (!name || center.length !== 2 || !Number.isFinite(center[0]) || !Number.isFinite(center[1]) || !Number.isFinite(k)) {
+          return null
+        }
+        return { name, center, k }
+      })
+      .filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+function persistSavedMapViews() {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(MAP_VIEW_STORAGE_KEY, JSON.stringify(savedMapViews.value))
+  } catch {
+    // 忽略持久化失败（如隐私模式），当前会话仍可继续使用。
+  }
+}
+
+function currentMapViewSnapshot() {
+  const transform = zoomTransform.value
+  const k = Number(transform?.k)
+  if (!Number.isFinite(k)) return null
+
+  const viewportCenter = transform.invert([canvasSize.width / 2, canvasSize.height / 2])
+  const center = buildProjection().invert(viewportCenter)
+  if (!center || !Number.isFinite(center[0]) || !Number.isFinite(center[1])) return null
+  return { center: [center[0], center[1]], k }
+}
+
+function saveMapView(name) {
+  const label = String(name || '').trim()
+  const snapshot = currentMapViewSnapshot()
+  if (!label || !snapshot) return false
+
+  const record = { name: label, ...snapshot }
+  const existingIndex = savedMapViews.value.findIndex((view) => view.name === label)
+  if (existingIndex >= 0) savedMapViews.value.splice(existingIndex, 1, record)
+  else savedMapViews.value.push(record)
+  persistSavedMapViews()
+  return true
+}
+
+function applyMapView(view) {
+  const nextTransform = transformFromSync(view)
+  if (!nextTransform || !zoomBehavior || !canvasRef.value) return false
+
+  applyingSynchronizedZoom = true
+  try {
+    d3.select(canvasRef.value).call(zoomBehavior.transform, nextTransform)
+    return true
+  } finally {
+    applyingSynchronizedZoom = false
+  }
+}
+
+function deleteMapView(name) {
+  const next = savedMapViews.value.filter((view) => view.name !== name)
+  if (next.length === savedMapViews.value.length) return
+  savedMapViews.value = next
+  persistSavedMapViews()
+}
+
 function transformFromSync(snapshot) {
   const k = Number(snapshot?.k)
   const center = Array.isArray(snapshot?.center) ? snapshot.center.map(Number) : []
@@ -3078,6 +3154,7 @@ const draftPointCount = computed(() => draftPoints.value.length)
 const context = {
   activeSystemTab,
   applyInitAndFcHour,
+  applyMapView,
   DEFAULT_FC_HOURS,
   canvasRef,
   changeFcHour,
@@ -3120,6 +3197,7 @@ const context = {
   activeLayerCombinationName,
   applyLayerCombination,
   deleteLayerCombination,
+  deleteMapView,
   activeMultiElementConfigurationName,
   applyMultiElementConfiguration,
   deleteMultiElementConfiguration,
@@ -3176,7 +3254,9 @@ const context = {
   refreshToLatest,
   resetView,
   saveLayerCombination,
+  saveMapView,
   savedLayerCombinations,
+  savedMapViews,
   scrollForecastSlider,
   setMultiInitInterval,
   setMultiInitPanelCount,

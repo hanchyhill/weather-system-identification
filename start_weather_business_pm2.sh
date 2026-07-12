@@ -67,7 +67,9 @@ fi
 # 推送后端（Node）：安装依赖并在缺失时生成 VAPID 密钥（generateVapidKeys.js 幂等，已存在即跳过）。
 cd "${SERVER_ROOT}"
 if [ ! -f "${SERVER_ROOT}/.env" ]; then
-  echo "提示：未发现 ${SERVER_ROOT}/.env，将使用默认配置。建议 cp .env.example .env 并设置 WEATHER_VAPID_SUBJECT。" >&2
+  echo "提示：未发现 ${SERVER_ROOT}/.env，将使用默认配置（端口默认 49173）。" >&2
+  echo "      建议 cp .env.example .env 并设置 WEATHER_VAPID_SUBJECT；" >&2
+  echo "      WEATHER_PUSH_PORT 须与 nginx_nwp.conf 中 /api/ 反代端口（49173）一致。" >&2
 fi
 pnpm install --prod
 node generateVapidKeys.js
