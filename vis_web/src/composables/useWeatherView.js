@@ -181,6 +181,8 @@ const savedLayerCombinations = ref(loadSavedLayerCombinations())
 const elementConfig = ref(loadElementConfig())
 const activeElementKey = ref('')
 const multiMapMode = ref(null)
+// 左侧「天气系统识别」控制面板的显隐（由地图上的按钮 toggle）
+const showControlRail = ref(true)
 const multiMapPanels = ref([])
 const multiInitInterval = ref('12')
 const multiInitPanelCount = ref(4)
@@ -253,6 +255,8 @@ const vortexMinVorticity = ref(0.00006)
 const vortexTrackMinWindSpeed = ref(0)
 const showFutureVortexTracks = ref(true)
 const showOnlyFutureVortexTracks = ref(true)
+// 仅显示“当前时效落在轨迹时间区间内”的轨迹（初始时效≤当前时效 且 结束时效≥当前时效）
+const showOnlyActiveVortexTracks = ref(true)
 const showHistoricalVortexTracks = computed({
   get: () => !showOnlyFutureVortexTracks.value,
   set: (value) => {
@@ -467,11 +471,33 @@ const isVortexTrackLevel = computed(() => VORTEX_TRACK_LEVELS.has(String(level.v
 const visibleVortexTracks = computed(() => {
   if (!isVortexTrackLevel.value || !showVortexTracks.value) return []
   const tracks = vortexTracks.value?.tracks || []
-  return tracks.filter((track) => (
-    (!showWarmOnlyTracks.value || track.warm)
-    && passesMinimum(track.max_wind, vortexTrackMinWindSpeed.value)
-  ))
+  const currentStep = Number(fcHour.value)
+  const filterActive = showOnlyActiveVortexTracks.value && Number.isFinite(currentStep)
+  return tracks.filter((track) => {
+    if (showWarmOnlyTracks.value && !track.warm) return false
+    if (!passesMinimum(track.max_wind, vortexTrackMinWindSpeed.value)) return false
+    if (filterActive) {
+      const [initStep, endStep] = trackStepRange(track)
+      // 仅保留当前时效落在轨迹时间区间 [初始, 结束] 内的轨迹
+      if (initStep === null || initStep > currentStep) return false
+      if (endStep === null || endStep < currentStep) return false
+    }
+    return true
+  })
 })
+
+// 轨迹的时间区间：所有轨迹点中最小与最大的 step
+function trackStepRange(track) {
+  let min = null
+  let max = null
+  for (const point of track.track || []) {
+    const step = Number(point.step ?? point.fc_hour)
+    if (!Number.isFinite(step)) continue
+    if (min === null || step < min) min = step
+    if (max === null || step > max) max = step
+  }
+  return [min, max]
+}
 const visibleTroughCount = computed(() => visibleTroughLines.value.length)
 const visibleJetAxisCount = computed(() => visibleJetAxisLines.value.length)
 const visibleColdFrontCount = computed(() => visibleColdFrontLines.value.length)
@@ -2785,6 +2811,12 @@ function resizeCanvas() {
   requestDraw()
 }
 
+// 左侧面板显隐会改变工作区宽度：等 DOM/布局更新后显式重算画布尺寸并重绘，
+// 不完全依赖 ResizeObserver（display:none/网格列收起时其触发不稳定）。
+watch(showControlRail, () => {
+  nextTick(() => requestAnimationFrame(resizeCanvas))
+})
+
 // —— 绘图：状态操作 ——
 function getDrawTool(key) {
   return DRAW_TOOLS.find((tool) => tool.key === key) || null
@@ -3118,6 +3150,7 @@ const context = {
   levelOptions,
   loadManifest,
   loadingState,
+  showControlRail,
   multiMapMode,
   multiMapModeOptions,
   multiMapPanels,
@@ -3181,6 +3214,7 @@ const context = {
   showWarmOnlyCenters,
   showWarmOnlyTracks,
   showOnlyFutureVortexTracks,
+  showOnlyActiveVortexTracks,
   sliderIndexCount,
   sliderOpts,
   markSlider,
@@ -3271,7 +3305,8 @@ watch([
   vortexMinVorticity,
   vortexTrackMinWindSpeed,
   showFutureVortexTracks,
-  showOnlyFutureVortexTracks
+  showOnlyFutureVortexTracks,
+  showOnlyActiveVortexTracks
 ], () => {
   clearHoverState()
   requestDraw()

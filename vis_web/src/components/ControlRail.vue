@@ -59,6 +59,7 @@ const {
   showVortexTracks,
   showWarmOnlyCenters,
   showWarmOnlyTracks,
+  showOnlyActiveVortexTracks,
   systemTabs,
   troughLineWidth,
   troughMinLength,
@@ -272,6 +273,10 @@ const {
         <div class="option-row">
           <span>历史轨迹</span>
           <n-switch v-model:value="showHistoricalVortexTracks" size="small" :disabled="!isVortexTrackLevel" />
+        </div>
+        <div class="option-row">
+          <span>仅当前活跃轨迹</span>
+          <n-switch v-model:value="showOnlyActiveVortexTracks" size="small" :disabled="!isVortexTrackLevel" />
         </div>
         <div class="option-list">
           <label>

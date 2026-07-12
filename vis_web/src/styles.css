@@ -28,6 +28,17 @@ input {
   overflow: hidden;
 }
 
+/* 隐藏左侧识别面板时，收起其网格列，让右侧工作区铺满 */
+.app-shell--rail-hidden {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+/* 工作区始终占用右侧轨道。v-show 隐藏前序元素后，不能依赖 Grid 的自动排位。 */
+.app-shell > .map-workspace,
+.app-shell > .multi-map-workspace {
+  grid-column: 2;
+}
+
 .control-rail {
   display: flex;
   flex-direction: column;
@@ -433,6 +444,37 @@ input {
   z-index: 5;
 }
 
+.panel-toggle-anchor {
+  position: absolute;
+  top: 206px;
+  left: 14px;
+  z-index: 5;
+}
+
+.panel-toggle-fab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid rgba(21, 31, 46, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 24px rgba(22, 33, 47, 0.12);
+  backdrop-filter: blur(8px);
+  color: #1f7a8c;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.panel-toggle-fab:hover,
+.panel-toggle-fab-active {
+  color: #fff;
+  background: #1f7a8c;
+  border-color: #1f7a8c;
+}
+
 .multi-map-workspace {
   display: grid;
   grid-template-rows: 48px 78px minmax(0, 1fr);
@@ -825,6 +867,11 @@ canvas:active {
   .app-shell {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .app-shell > .map-workspace,
+  .app-shell > .multi-map-workspace {
+    grid-column: 1;
   }
 
   .control-rail {

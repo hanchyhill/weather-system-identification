@@ -1,5 +1,5 @@
 <script setup>
-import { Camera, Crop, Monitor, RotateCcw } from 'lucide-vue-next'
+import { Camera, Crop, Monitor, PanelLeftClose, PanelLeftOpen, RotateCcw } from 'lucide-vue-next'
 import {
   NButton,
   NPopover,
@@ -56,11 +56,17 @@ const {
   preloading,
   resetView,
   shellRef,
+  showControlRail,
   zoomTransform
 } = viewContext
 
 // 截图工具：范围/剪贴板/下载逻辑封装在 useScreenshot 中，按面板独立运行。
 const showScreenshotMenu = ref(false)
+
+// 切换左侧「天气系统识别」控制面板的显隐（仅主视图存在该状态）
+function toggleControlRail() {
+  if (showControlRail) showControlRail.value = !showControlRail.value
+}
 const {
   selecting: screenshotSelecting,
   toast: screenshotToast,
@@ -176,6 +182,24 @@ function captureRegionView() {
 
       <div v-if="!compact" class="drawing-toolbar-anchor">
         <DrawingToolbar />
+      </div>
+
+      <div v-if="!compact" class="panel-toggle-anchor">
+        <n-tooltip trigger="hover" placement="right">
+          <template #trigger>
+            <button
+              type="button"
+              class="panel-toggle-fab"
+              :class="{ 'panel-toggle-fab-active': !showControlRail }"
+              :aria-label="showControlRail ? '隐藏识别面板' : '显示识别面板'"
+              @click="toggleControlRail"
+            >
+              <PanelLeftClose v-if="showControlRail" :size="20" />
+              <PanelLeftOpen v-else :size="20" />
+            </button>
+          </template>
+          {{ showControlRail ? '隐藏天气系统识别面板' : '显示天气系统识别面板' }}
+        </n-tooltip>
       </div>
 
       <div v-if="mouseGeo" class="coordinate-readout">

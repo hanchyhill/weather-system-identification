@@ -15,8 +15,8 @@ provide(WEATHER_VIEW_CONTEXT_KEY, weatherView)
 
 <template>
   <n-config-provider>
-    <main class="app-shell">
-      <ControlRail />
+    <main class="app-shell" :class="{ 'app-shell--rail-hidden': !weatherView.showControlRail.value }">
+      <ControlRail v-show="weatherView.showControlRail.value" />
       <MultiMapWorkspace v-show="weatherView.multiMapMode.value" />
       <MapWorkspace v-show="!weatherView.multiMapMode.value" />
     </main>

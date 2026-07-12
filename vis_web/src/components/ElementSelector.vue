@@ -1,5 +1,5 @@
 <script setup>
-import { GripVertical, LayoutGrid, Plus, RotateCcw, Settings, Trash2 } from 'lucide-vue-next'
+import { CloudSun, GripVertical, Plus, RotateCcw, Settings, Trash2 } from 'lucide-vue-next'
 import {
   NButton,
   NColorPicker,
@@ -203,11 +203,11 @@ defineExpose({ openConfig })
   >
     <template #trigger>
       <n-button v-if="headerTrigger" class="es-header-trigger" size="small" type="primary">
-        <template #icon><LayoutGrid :size="15" /></template>
+        <template #icon><CloudSun :size="15" /></template>
         天气要素选择器
       </n-button>
       <button v-else type="button" class="es-fab" aria-label="天气要素选择器">
-        <LayoutGrid :size="20" />
+        <CloudSun :size="20" />
       </button>
     </template>
 
