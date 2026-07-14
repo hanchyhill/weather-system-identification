@@ -654,15 +654,18 @@ def setup_axis(bounds: Bounds, figsize: tuple[float, float], dpi: int):
 
 
 def save_svg(fig, output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(
-        output_path,
-        bbox_inches="tight",
-        format="svg",
-        transparent=True,
-        pad_inches=0,
-    )
-    plt.close(fig)
+    """Save an SVG and always release its Matplotlib figure."""
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(
+            output_path,
+            bbox_inches="tight",
+            format="svg",
+            transparent=True,
+            pad_inches=0,
+        )
+    finally:
+        plt.close(fig)
 
 
 def draw_hght_contour(
@@ -1718,7 +1721,7 @@ def write_generation_stats(output_root: Path, init_time: str, stats: list[dict[s
 
 
 def default_worker_count() -> int:
-    return max((os.cpu_count() or 1) - 1, 1)
+    return max((os.cpu_count() or 1) - 2, 1)
 
 
 def build_generation_jobs(args, fc_hours: list[str]) -> list[tuple[str, str, int | None]]:

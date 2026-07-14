@@ -2881,9 +2881,23 @@ function resizeCanvas() {
   const nextWidth = Math.max(minCanvasWidth, Math.floor(rect.width))
   const nextHeight = Math.max(minCanvasHeight, Math.floor(rect.height))
   const sizeChanged = canvasSize.width !== nextWidth || canvasSize.height !== nextHeight
+
+  // 画布尺寸变化前先记录当前视窗中心的经纬度：投影用 fitExtent(canvasSize) 构建，
+  // 尺寸一变投影就变，而 zoomTransform 的平移量不变，会导致视窗中央对应的经纬度发生偏移
+  // （例如隐藏左侧面板使画布变宽时）。先取旧中心，再在新尺寸下重建 transform 使其保持不变。
+  const previousCenter = sizeChanged ? currentMapViewSnapshot() : null
+
   canvasSize.width = nextWidth
   canvasSize.height = nextHeight
-  if (sizeChanged && transformFromSync(syncState?.zoom)) applySynchronizedZoom(syncState.zoom)
+
+  if (sizeChanged) {
+    if (transformFromSync(syncState?.zoom)) {
+      applySynchronizedZoom(syncState.zoom)
+    } else if (previousCenter) {
+      // 单图（无多图联动）时，按记录的中心经纬度在新画布尺寸下重建 transform，保持中央经纬度不变。
+      applySynchronizedZoom(previousCenter)
+    }
+  }
   requestDraw()
 }
 
