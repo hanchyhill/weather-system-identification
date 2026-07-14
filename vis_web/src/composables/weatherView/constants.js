@@ -16,6 +16,15 @@ export const COLD_FRONT_LEVELS = new Set(['850', '925', '950', '1000'])
 export const DEFAULT_MAP_BOUNDS = { lon_min: 60, lon_max: 150, lat_min: 0, lat_max: 60 }
 export const DEFAULT_MAP_CENTER = [105, 30]
 export const DEFAULT_MAP_SCALE = 3
+
+// 系统内置的地理视图默认配置：用户尚未保存任何视图（首次使用）时作为默认项展示。
+// 一旦用户保存/删除过视图，则以用户 localStorage 中的列表为准，不再注入这些默认值。
+export const DEFAULT_MAP_VIEWS = [
+  { name: '中国', center: [105.87156370370164, 29.30487062388457], k: 2.999999999999999 },
+  { name: '华南', center: [113.18672686219357, 21.25273087528488], k: 10.189154957362078 },
+  { name: '广东', center: [113.75328674707802, 21.9864611572074], k: 20.49162514538987 },
+  { name: '西太', center: [125.08646629276387, 18.218169869991247], k: 5.06640532454269 },
+]
 export const TROUGH_DEFAULT_COLOR = '#8B4513'
 export const SHEAR_COLORS = reactive({
   shear_u_left: TROUGH_DEFAULT_COLOR,

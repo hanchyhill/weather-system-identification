@@ -395,6 +395,7 @@ export function useWeatherView(initialView = {}) {
     projectionOptions,
     refreshToLatest,
     resetView: projection.resetView,
+    restoreDefaultMapViews: projection.restoreDefaultMapViews,
     saveLayerCombination: elementConfig.saveLayerCombination,
     saveMapView: projection.saveMapView,
     savedLayerCombinations: store.savedLayerCombinations,

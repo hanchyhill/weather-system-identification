@@ -10,6 +10,7 @@ import {
   CONTOUR_MAX_DILATION_PX,
   fallbackLayerOptions,
   DRAW_TOOLS,
+  DEFAULT_MAP_VIEWS,
   LAYER_COMBINATION_STORAGE_KEY,
   MULTI_ELEMENT_CONFIGURATION_STORAGE_KEY,
   MULTI_ELEMENT_FORECAST_CONFIGURATION_STORAGE_KEY,
@@ -377,9 +378,12 @@ export function loadSavedLayerCombinations() {
 }
 
 export function loadSavedMapViews() {
-  if (typeof window === 'undefined') return []
+  if (typeof window === 'undefined') return defaultMapViews()
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(MAP_VIEW_STORAGE_KEY) || '[]')
+    const raw = window.localStorage.getItem(MAP_VIEW_STORAGE_KEY)
+    // 存储键缺失（首次使用）时注入系统内置默认视图；键已存在（含被清空为 []）则以用户数据为准。
+    if (raw === null) return defaultMapViews()
+    const parsed = JSON.parse(raw || '[]')
     if (!Array.isArray(parsed)) return []
     return parsed
       .map((view) => {
@@ -395,4 +399,9 @@ export function loadSavedMapViews() {
   } catch {
     return []
   }
+}
+
+// 深拷贝内置默认视图，避免多个视图实例共享/改动模块级常量。
+export function defaultMapViews() {
+  return DEFAULT_MAP_VIEWS.map((view) => ({ name: view.name, center: [...view.center], k: view.k }))
 }

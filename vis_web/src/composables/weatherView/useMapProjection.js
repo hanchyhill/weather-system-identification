@@ -3,6 +3,7 @@
 import * as d3 from 'd3'
 
 import { DEFAULT_MAP_CENTER, DEFAULT_MAP_SCALE, MAP_VIEW_STORAGE_KEY } from './constants'
+import { defaultMapViews } from './helpers'
 
 export function useMapProjection(store) {
   const {
@@ -94,6 +95,13 @@ export function useMapProjection(store) {
     persistSavedMapViews()
   }
 
+  // 用内置视图替换用户当前保存的列表，并立即持久化；返回新列表方便调用方确认操作成功。
+  function restoreDefaultMapViews() {
+    savedMapViews.value = defaultMapViews()
+    persistSavedMapViews()
+    return savedMapViews.value
+  }
+
   function transformFromSync(snapshot) {
     const k = Number(snapshot?.k)
     const center = Array.isArray(snapshot?.center) ? snapshot.center.map(Number) : []
@@ -176,6 +184,7 @@ export function useMapProjection(store) {
     saveMapView,
     applyMapView,
     deleteMapView,
+    restoreDefaultMapViews,
     transformFromSync,
     applySynchronizedZoom,
     broadcastCursor,

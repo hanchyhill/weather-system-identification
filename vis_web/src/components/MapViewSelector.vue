@@ -1,5 +1,5 @@
 <script setup>
-import { Globe2, Plus, Trash2 } from 'lucide-vue-next'
+import { Globe2, Plus, RotateCcw, Trash2 } from 'lucide-vue-next'
 import { NButton, NInput, NModal, NPopover, NTooltip } from 'naive-ui'
 import { ref } from 'vue'
 
@@ -8,6 +8,7 @@ import { useWeatherViewContext } from '../context/weatherViewContext'
 const {
   applyMapView,
   deleteMapView,
+  restoreDefaultMapViews,
   saveMapView,
   savedMapViews
 } = useWeatherViewContext()
@@ -72,6 +73,10 @@ function formatCoordinate(value) {
       </div>
       <p v-else class="map-view-empty">还没有保存的地理视图。</p>
 
+      <button type="button" class="map-view-restore" @click="restoreDefaultMapViews">
+        <RotateCcw :size="16" />
+        恢复默认地理视图配置
+      </button>
       <button type="button" class="map-view-save" @click="openSaveDialog">
         <Plus :size="16" />
         保存当前视图
@@ -206,7 +211,8 @@ function formatCoordinate(value) {
   color: #dc2626;
 }
 
-.map-view-save {
+.map-view-save,
+.map-view-restore {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -224,6 +230,20 @@ function formatCoordinate(value) {
 
 .map-view-save:hover {
   background: rgba(31, 122, 140, 0.12);
+}
+
+.map-view-restore {
+  margin-top: 0;
+  border-style: solid;
+  border-color: #d7dee7;
+  background: #fff;
+  color: #526173;
+}
+
+.map-view-restore:hover {
+  border-color: #1f7a8c;
+  background: rgba(31, 122, 140, 0.08);
+  color: #1f7a8c;
 }
 
 .map-view-dialog-actions {
