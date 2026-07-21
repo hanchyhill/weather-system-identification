@@ -6,7 +6,7 @@ import { onMounted, ref } from 'vue'
 
 import { exportSavedConfigurations, importSavedConfigurations } from '../utils/configBackup'
 import { LAYER_TYPE_OPTIONS, DEFAULT_UPPER_LEVELS as LEVEL_OPTIONS } from '../utils/elementSelectorConfig'
-import { recentInitTimes } from '../utils/initTime'
+import { calLatestBaseTime } from '../utils/initTime'
 import {
   getNotificationPermission,
   getSubscriptionState,
@@ -15,7 +15,7 @@ import {
   unsubscribeFromPush
 } from '../utils/pushClient'
 import { DEFAULT_PREFETCH_OPTIONS, loadPrefetchOptions, savePrefetchOptions } from '../utils/prefetchOptions'
-import { prefetchInitTimes, setPrefetchOptions } from '../utils/swClient'
+import { cancelPrefetch, prefetchLatest, setPrefetchOptions } from '../utils/swClient'
 
 const Z_LEVEL_OPTIONS = [
   { value: 0, label: 'z0 · 概览' },
@@ -36,11 +36,13 @@ const importedBackup = ref(false)
 
 // 预取策略（本地副本，弹窗内编辑，「保存并应用」时落盘 + 下发）
 const zLevels = ref([...DEFAULT_PREFETCH_OPTIONS.zLevels])
+const prefetchEnabled = ref(true)
 const layerTypes = ref([])
 const levels = ref([])
 
 function loadLocal() {
   const options = loadPrefetchOptions()
+  prefetchEnabled.value = options.enabled
   zLevels.value = options.zLevels
   layerTypes.value = options.layerTypes
   levels.value = options.levels
@@ -89,14 +91,20 @@ async function onToggleSubscription(value) {
 
 function applySettings() {
   const options = {
+    enabled: prefetchEnabled.value,
     zLevels: zLevels.value.length ? zLevels.value : [...DEFAULT_PREFETCH_OPTIONS.zLevels],
     layerTypes: layerTypes.value,
     levels: levels.value
   }
   savePrefetchOptions(options)
   setPrefetchOptions(options) // 下发给 SW 持久化（供 push 唤醒时用）
-  prefetchInitTimes(recentInitTimes(2), options) // 立即按新策略预取
-  message.value = '预取策略已保存并开始加载'
+  if (options.enabled) {
+    prefetchLatest(calLatestBaseTime(), options)
+    message.value = '预加载策略已保存并开始加载'
+  } else {
+    cancelPrefetch()
+    message.value = '预加载已关闭'
+  }
 }
 
 function exportConfigurations() {
@@ -156,51 +164,55 @@ function reloadPage() {
       <n-card class="push-dialog" title="全局设置" :bordered="false" size="small" role="dialog">
         <n-tabs v-model:value="activeTab" type="line" animated>
           <n-tab-pane name="updates" tab="实时更新">
-            <template v-if="!supported">
-              <p class="push-note">当前环境不支持实时推送（需通过 https 或 localhost 访问）。</p>
-            </template>
-            <template v-else>
-              <div class="push-row">
-                <div>
-                  <div class="push-row__title">订阅新起报通知</div>
-                  <div class="push-row__desc">数据就绪时通知你，并在后台预加载最新起报</div>
-                </div>
-                <n-switch
-                  :value="subscribed"
-                  :disabled="busy || permission === 'denied'"
-                  @update:value="onToggleSubscription"
-                />
+            <div class="push-row">
+              <div>
+                <div class="push-row__title">订阅新起报通知</div>
+                <div class="push-row__desc">数据就绪时通知你；此开关不控制预加载</div>
               </div>
-              <p v-if="permission === 'denied'" class="push-note push-note--warn">
-                通知权限已被拒绝，请在浏览器站点设置里手动允许后重试。
-              </p>
+              <n-switch
+                :value="subscribed"
+                :disabled="!supported || busy || permission === 'denied'"
+                @update:value="onToggleSubscription"
+              />
+            </div>
+            <p v-if="!supported" class="push-note">当前环境不支持实时推送（需通过 https 或 localhost 访问）。</p>
+            <p v-else-if="permission === 'denied'" class="push-note push-note--warn">
+              通知权限已被拒绝，请在浏览器站点设置里手动允许后重试。
+            </p>
 
-              <div class="push-divider"></div>
+            <div class="push-divider"></div>
+
+            <div class="push-row push-section">
+              <div>
+                <div class="push-row__title">后台预加载最新起报</div>
+                <div class="push-row__desc">默认开启；关闭后 Push 仍只发送通知</div>
+              </div>
+              <n-switch v-model:value="prefetchEnabled" />
+            </div>
 
               <div class="push-section">
                 <div class="push-section__title">预加载瓦片层次</div>
                 <div class="push-section__desc">层次越高越清晰、数量越多。默认 z0 + z1。</div>
-                <n-checkbox-group v-model:value="zLevels">
-                  <n-checkbox v-for="opt in Z_LEVEL_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                <n-checkbox-group v-model:value="zLevels" :disabled="!prefetchEnabled">
+                  <n-checkbox v-for="opt in Z_LEVEL_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" :disabled="!prefetchEnabled" />
                 </n-checkbox-group>
               </div>
 
               <div class="push-section">
                 <div class="push-section__title">预加载要素</div>
                 <div class="push-section__desc">不勾选表示全部要素。</div>
-                <n-checkbox-group v-model:value="layerTypes" class="push-grid">
-                  <n-checkbox v-for="opt in LAYER_TYPE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                <n-checkbox-group v-model:value="layerTypes" class="push-grid" :disabled="!prefetchEnabled">
+                  <n-checkbox v-for="opt in LAYER_TYPE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" :disabled="!prefetchEnabled" />
                 </n-checkbox-group>
               </div>
 
               <div class="push-section">
                 <div class="push-section__title">预加载气压层</div>
                 <div class="push-section__desc">不勾选表示全部层次。</div>
-                <n-checkbox-group v-model:value="levels" class="push-grid">
-                  <n-checkbox v-for="opt in LEVEL_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                <n-checkbox-group v-model:value="levels" class="push-grid" :disabled="!prefetchEnabled">
+                  <n-checkbox v-for="opt in LEVEL_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" :disabled="!prefetchEnabled" />
                 </n-checkbox-group>
               </div>
-            </template>
           </n-tab-pane>
 
           <n-tab-pane name="backup" tab="配置备份">
@@ -233,7 +245,7 @@ function reloadPage() {
             <span class="push-footer__msg">{{ activeTab === 'updates' ? message : '' }}</span>
             <div class="push-footer__actions">
               <n-button size="small" @click="showDialog = false">关闭</n-button>
-              <n-button v-if="activeTab === 'updates' && supported" size="small" type="primary" @click="applySettings">保存并应用</n-button>
+              <n-button v-if="activeTab === 'updates'" size="small" type="primary" @click="applySettings">保存并应用</n-button>
             </div>
           </div>
         </template>

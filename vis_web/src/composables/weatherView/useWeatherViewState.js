@@ -45,7 +45,14 @@ export function createRuntime() {
     loadedRenderScale: 1,
     preloadRunId: 0,
     preloadTimer: null,
-    preloadAbortController: null
+    preloadAbortController: null,
+    // 预报时效/层次切换的去抖定时器：连续快速切换时只加载停下后的最终时效。
+    fcReloadTimer: null,
+    // 天气系统 JSON 加载的防过期令牌：乱序返回的旧响应据此丢弃，避免慢半拍覆盖。
+    troughLoadId: 0,
+    coldFrontLoadId: 0,
+    jetLoadId: 0,
+    vortexCentersLoadId: 0
   }
 }
 
@@ -127,6 +134,9 @@ export function createWeatherViewStore(initialView = {}) {
   const showWarmOnlyCenters = ref(false)
   const showTooltip = ref(true)
   const showTileDebug = ref(false)
+  // 经纬度坐标轴与网格：单图（compact=false）默认开启，多图子图（compact=true）默认关闭；
+  // initialView 可显式覆盖。
+  const showGraticule = ref(initialView.showGraticule ?? !compactView)
   const activeSystemTab = ref('trough')
   const troughMinLength = ref(0)
   const troughMinWindSpeed = ref(3.0)
@@ -586,6 +596,7 @@ export function createWeatherViewStore(initialView = {}) {
     showWarmOnlyCenters,
     showTooltip,
     showTileDebug,
+    showGraticule,
     activeSystemTab,
     troughMinLength,
     troughMinWindSpeed,

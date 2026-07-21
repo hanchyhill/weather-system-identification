@@ -22,5 +22,8 @@
     "vite": "latest",
     "vue": "latest",
     "vue-slider-component": "^4.1.0-beta.7"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.5"
   }
 }

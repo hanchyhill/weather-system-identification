@@ -12,9 +12,36 @@ import {
   NTag,
   NTooltip
 } from 'naive-ui'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { useWeatherViewContext } from '../context/weatherViewContext'
 import PushSubscribeButton from './PushSubscribeButton.vue'
+import { loadPrefetchOptions } from '../utils/prefetchOptions'
+import {
+  EMPTY_PREFETCH_STATUS,
+  isServiceWorkerSupported,
+  requestPrefetchStatus,
+  subscribePrefetchStatus
+} from '../utils/swClient'
+
+const swSupported = isServiceWorkerSupported()
+const swPrefetchStatus = ref({
+  ...EMPTY_PREFETCH_STATUS,
+  state: loadPrefetchOptions().enabled ? 'idle' : 'disabled'
+})
+const SW_STATE_LABELS = {
+  disabled: '未启用', idle: '空闲', manifest: '读取 Manifest', prefetching: '预加载中',
+  paused: '前台请求暂停', complete: '已完成', storage_limited: '存储受限', error: '失败'
+}
+const swStateLabel = computed(() => (
+  swSupported ? (SW_STATE_LABELS[swPrefetchStatus.value.state] || '空闲') : '未启用'
+))
+let unsubscribePrefetchStatus = null
+onMounted(() => {
+  unsubscribePrefetchStatus = subscribePrefetchStatus((next) => { swPrefetchStatus.value = next })
+  requestPrefetchStatus()
+})
+onBeforeUnmount(() => unsubscribePrefetchStatus?.())
 
 const {
   activeSystemTab,
@@ -53,6 +80,7 @@ const {
   showRawPoints,
   showSvgLayer,
   showTileDebug,
+  showGraticule,
   showTooltip,
   showTrough,
   showVortexCenters,
@@ -196,6 +224,7 @@ const {
 
     <section class="switch-list">
       <label><span>SVG 图层</span><n-switch v-model:value="showSvgLayer" size="small" /></label>
+      <label><span>经纬网格</span><n-switch v-model:value="showGraticule" size="small" /></label>
       <label><span>属性提示</span><n-switch v-model:value="showTooltip" size="small" /></label>
       <label><span>瓦片调试</span><n-switch v-model:value="showTileDebug" size="small" /></label>
     </section>
@@ -339,6 +368,15 @@ const {
       <div><span>冷锋数量</span><strong>{{ visibleColdFrontCount }}</strong></div>
       <div><span>中心数量</span><strong>{{ visibleVortexCenterCount }}</strong></div>
       <div><span>轨迹数量</span><strong>{{ visibleVortexTrackCount }}</strong></div>
+    </section>
+
+    <section class="status-panel sw-prefetch-panel">
+      <div><span>SW 预加载</span><n-tag size="small" :bordered="false">{{ swSupported ? '支持' : '不支持' }}</n-tag></div>
+      <div><span>最新起报时次</span><strong>{{ swPrefetchStatus.initTime || '--' }}</strong></div>
+      <div><span>当前状态</span><n-tag size="small" :bordered="false">{{ swStateLabel }}</n-tag></div>
+      <div><span>IndexedDB</span><strong>{{ swPrefetchStatus.ready }} / {{ swPrefetchStatus.total }}</strong></div>
+      <div><span>本轮下载</span><strong>{{ swPrefetchStatus.downloaded }}</strong></div>
+      <div><span>失败</span><strong>{{ swPrefetchStatus.failed }}</strong></div>
     </section>
 
     <p v-if="errorMessage" class="empty-note">{{ errorMessage }}</p>

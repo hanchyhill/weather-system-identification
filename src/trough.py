@@ -311,11 +311,98 @@ def convert_to_dataframe(result):
     return sorted_df
 
 
+def line_length(line):
+    """计算一条 ``[lat, lon]`` 折线的累计长度，单位为经纬度度数。"""
+    points = np.asarray(line, dtype=float)
+    if len(points) < 2:
+        return 0.0
+    return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
+
+
+def split_lines_by_max_length(lines, max_line_length=None):
+    """递归拆分过长槽线，每次从原始相邻点间距最大处断开。"""
+    if max_line_length is None:
+        return [np.asarray(line) for line in lines]
+    if max_line_length <= 0:
+        raise ValueError('max_line_length must be greater than 0 or None')
+
+    result = []
+    pending = [np.asarray(line) for line in lines]
+    while pending:
+        line = pending.pop(0)
+        if len(line) < 2 or line_length(line) <= max_line_length:
+            result.append(line)
+            continue
+
+        gaps = np.linalg.norm(np.diff(line, axis=0), axis=1)
+        split_index = int(np.argmax(gaps)) + 1
+        left = line[:split_index]
+        right = line[split_index:]
+
+        # 两点线无法继续拆成有效折线，保留它并避免死循环。
+        if len(line) == 2:
+            result.append(line)
+            continue
+        valid_segments = [segment for segment in (left, right) if len(segment) >= 2]
+        pending[0:0] = valid_segments
+
+    return result
+
+
+def _turn_angle(line, point_index, window=1):
+    """返回指定点的局部转向角；0°表示直行，180°表示折返。"""
+    points = np.asarray(line, dtype=float)
+    left_index = max(0, point_index - window)
+    right_index = min(len(points) - 1, point_index + window)
+    incoming = points[point_index] - points[left_index]
+    outgoing = points[right_index] - points[point_index]
+    denominator = np.linalg.norm(incoming) * np.linalg.norm(outgoing)
+    if denominator == 0:
+        return 0.0
+    cosine = np.clip(np.dot(incoming, outgoing) / denominator, -1.0, 1.0)
+    return float(np.degrees(np.arccos(cosine)))
+
+
+def split_lines_by_turn_angle(lines, max_turn_angle=None, turn_angle_window=1):
+    """在局部转向角过大的原始点处分段，并让相邻分段共享转折点。"""
+    if max_turn_angle is None:
+        return [np.asarray(line) for line in lines]
+    if not 0 < max_turn_angle < 180:
+        raise ValueError('max_turn_angle must be between 0 and 180 or None')
+    if turn_angle_window < 1:
+        raise ValueError('turn_angle_window must be at least 1')
+
+    result = []
+    for line in lines:
+        line = np.asarray(line)
+        if len(line) < 3:
+            result.append(line)
+            continue
+
+        split_indices = [
+            index for index in range(1, len(line) - 1)
+            if _turn_angle(line, index, turn_angle_window) > max_turn_angle
+        ]
+        start = 0
+        for split_index in split_indices:
+            segment = line[start:split_index + 1]
+            if len(segment) >= 2:
+                result.append(segment)
+            start = split_index
+        final_segment = line[start:]
+        if len(final_segment) >= 2:
+            result.append(final_segment)
+
+    return result
+
+
 def process_and_plot_shear_lines(points, uwnd, vwnd, interval_dis, length_min, smoothness,
                                  vorticity_threshold, wind_speed_threshold,
                                  angle_threshold, color, linewidth, label, ax,
                                  shear_type, smooth_method='spline',
-                                 num_points=100, num_control_points=None):
+                                 num_points=100, num_control_points=None,
+                                 max_line_length=None, max_turn_angle=None,
+                                 turn_angle_window=1):
     """
     处理切变点数据并绘制切变线的通用函数
 
@@ -337,8 +424,14 @@ def process_and_plot_shear_lines(points, uwnd, vwnd, interval_dis, length_min, s
     - smooth_method: str, 平滑方法,可选'spline'或'bezier'
     - num_points: int, 平滑后的点数(用于bezier方法)
     - num_control_points: int或None, 贝塞尔曲线的控制点数量
+    - max_line_length: float或None, 原始槽线最大累计长度；超限时在最大点间隙处拆分
+    - max_turn_angle: float或None, 局部最大转向角；超限时在转折点处拆分
+    - turn_angle_window: int, 计算局部转向角时向两侧取的原始点数
     """
     lines = form_lines(points, interval_dis, length_min)
+    lines = split_lines_by_max_length(lines, max_line_length)
+    lines = split_lines_by_turn_angle(lines, max_turn_angle, turn_angle_window)
+    lines = [line for line in lines if line_length(line) > length_min]
     lines_attr = add_meteorological_attributes(lines, uwnd, vwnd)
     df_lines = convert_to_dataframe(lines_attr)
     if df_lines.empty:
@@ -470,6 +563,9 @@ def plot_trough_analysis(init_time=None, fc_hour=0, target_lev=500,
                 smooth_method=config['smooth_method'],
                 num_points=config['num_points'],
                 num_control_points=config['num_control_points'],
+                max_line_length=config.get('max_line_length'),
+                max_turn_angle=config.get('max_turn_angle'),
+                turn_angle_window=config.get('turn_angle_window', 1),
             )
         )
 

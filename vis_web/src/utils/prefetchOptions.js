@@ -7,6 +7,7 @@
 const STORAGE_KEY = 'weather-prefetch-options'
 
 export const DEFAULT_PREFETCH_OPTIONS = {
+  enabled: true,
   zLevels: [0, 1],
   layerTypes: [],
   levels: []
@@ -18,6 +19,8 @@ export function loadPrefetchOptions() {
     if (!raw) return { ...DEFAULT_PREFETCH_OPTIONS }
     const parsed = JSON.parse(raw)
     return {
+      // v1 配置没有 enabled；迁移时保持历史行为（默认开启）。
+      enabled: parsed.enabled !== false,
       zLevels:
         Array.isArray(parsed.zLevels) && parsed.zLevels.length
           ? parsed.zLevels.map(Number).filter((z) => z === 0 || z === 1 || z === 2)
@@ -32,7 +35,11 @@ export function loadPrefetchOptions() {
 
 export function savePrefetchOptions(options) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(options || {}))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_PREFETCH_OPTIONS,
+      ...(options || {}),
+      enabled: options?.enabled !== false
+    }))
   } catch {
     // 忽略存储失败（隐私模式等）
   }

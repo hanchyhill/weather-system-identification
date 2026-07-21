@@ -5,6 +5,7 @@ import { computed, reactive, ref, watch } from 'vue'
 
 import { useScreenshot } from '../composables/useScreenshot'
 import { useWeatherViewContext } from '../context/weatherViewContext'
+import { MAX_CONCURRENT } from '../utils/loadQueue'
 import ElementSelector from './ElementSelector.vue'
 import ForecastSlider from './ForecastSlider.vue'
 import MultiMapPanel from './MultiMapPanel.vue'
@@ -124,6 +125,11 @@ const gridStyle = computed(() => {
     '--multi-map-panel-count': count
   }
 })
+// 把全局可见资源并发预算平均分给子图：4 图每图 2 路，6/8/9 图每图 1 路。
+// 这样各子图同步推进，不会由先挂载的子图占满全部连接。
+const panelLoadConcurrency = computed(() => (
+  Math.max(1, Math.floor(MAX_CONCURRENT / Math.max(1, multiMapPanels.value.length)))
+))
 
 const syncState = reactive({
   cursor: null,
@@ -650,8 +656,8 @@ watch(multiMapPanels, (panels) => {
     <div ref="gridRef" class="multi-map-grid" :style="gridStyle">
       <MultiMapPanel
         v-for="(panel, index) in multiMapPanels"
-        :key="panel.id"
-        :panel="{ ...panel, syncId: panel.id, syncState }"
+        :key="`${panel.id}-load-${panelLoadConcurrency}`"
+        :panel="{ ...panel, syncId: panel.id, syncState, maxLoadConcurrent: panelLoadConcurrency }"
         :active="isElementEditableMode && activeElementPanelIndex === index"
         @activate="activateElementPanel(index)"
       />

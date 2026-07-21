@@ -20,6 +20,7 @@ import {
 // 在途请求合并表（模块级，跨所有视图实例共享）：多个子图/单图同时请求同一 cacheKey 时，
 // 只发起一次网络+解码，其余等待同一 Promise。键与内存缓存一致（含 @Nx 超采样后缀）。
 const inFlightImageLoads = new Map()
+const inFlightSourceLoads = new Map()
 const cache = sharedSvgImageCache
 
 // compact（多图子图）恒为 1：子图在屏上很小，超采样带来的清晰度提升不可感知，
@@ -117,8 +118,10 @@ export function isContourLayer(layer) {
 
 // 计算等值线膨胀半径（当前缩放坐标系下的本地单位）。
 // 屏幕像素补偿量随 k 从参考值线性增长，再除以 k 换算回被 context.scale(k) 缩放前的坐标。
+// 填色层（如 500hPa hght_contour 的等值线填色图）不参与膨胀：其填色为半透明，
+// 多方向重绘会以 source-over 反复叠加同一区域，导致 alpha 累积、颜色在小放大系数下过饱和。
 export function contourDilationRadius(layer, k) {
-  if (!isContourLayer(layer) || !(k > 0) || k >= CONTOUR_REFERENCE_ZOOM) return 0
+  if (!isContourLayer(layer) || layer?.isFill || !(k > 0) || k >= CONTOUR_REFERENCE_ZOOM) return 0
   const screenPx = ((CONTOUR_REFERENCE_ZOOM - k) / CONTOUR_REFERENCE_ZOOM) * CONTOUR_MAX_DILATION_PX
   return screenPx / k
 }
@@ -158,6 +161,27 @@ export function getTileZoom(k) {
   if (k <= 5) return 0
   if (k <= 8) return 1
   return 2
+}
+
+// 经纬网格间隔（度）：放大系数越大间隔越小，网格线与坐标轴刻度共用同一步长。
+export function graticuleStep(k) {
+  return k >= 4 ? 5 : k >= 2 ? 10 : 15
+}
+
+// 经度刻度标注：规整到 -180..180，带 E/W 半球（本初子午线记作 0°）。
+export function formatLonTick(lon) {
+  let value = ((lon + 180) % 360 + 360) % 360 - 180
+  if (Object.is(value, -0)) value = 0
+  const rounded = Math.round(value * 100) / 100
+  if (rounded === 0 || Math.abs(rounded) === 180) return `${Math.abs(rounded)}°`
+  return `${Math.abs(rounded)}°${rounded > 0 ? 'E' : 'W'}`
+}
+
+// 纬度刻度标注：带 N/S 半球（赤道记作 0°）。
+export function formatLatTick(lat) {
+  const rounded = Math.round(lat * 100) / 100
+  if (rounded === 0) return '0°'
+  return `${Math.abs(rounded)}°${rounded > 0 ? 'N' : 'S'}`
 }
 
 export function boundsPolygon(bounds) {
@@ -231,41 +255,59 @@ export function scaleSvgMarkup(text, scale) {
   ))
 }
 
-export async function loadSvgImage(url, renderScale = 1, priority = PRIORITY.HIGH, signal = null) {
+// 仅把原始 SVG 写入共享 IndexedDB，不解码图片；供相邻预报时效的低优先级预加载使用。
+export async function cacheSvgSource(url, priority = PRIORITY.LOW, signal = null, scheduling = {}) {
+  if (!url) return null
+  const cached = await cache.getSource(url)
+  if (cached) return cached
+  let pending = inFlightSourceLoads.get(url)
+  // 可见请求不能继承一个可能马上被调度器中止的 LOW Promise；另起 HIGH 会触发低优先级取消。
+  if (!pending || (priority === PRIORITY.HIGH && pending.priority === PRIORITY.LOW)) {
+    const task = runQueued(async (schedulerSignal) => {
+      const response = await fetch(url, { signal: schedulerSignal })
+      if (!response.ok) return null
+      const blob = await response.blob()
+      await cache.putSource(url, blob, response.headers.get('content-type'))
+      return blob
+    }, priority, signal, scheduling)
+    pending = { promise: task, priority }
+    inFlightSourceLoads.set(url, pending)
+    task.then(
+      () => { if (inFlightSourceLoads.get(url) === pending) inFlightSourceLoads.delete(url) },
+      () => { if (inFlightSourceLoads.get(url) === pending) inFlightSourceLoads.delete(url) }
+    )
+  }
+  return pending.promise
+}
+
+export async function loadSvgImage(url, renderScale = 1, priority = PRIORITY.HIGH, signal = null, scheduling = {}) {
   if (!url) return null
   const scale = renderScale > 1 ? renderScale : 1
   const cacheKey = scale > 1 ? `${url}@${scale}x` : url
   try {
-    const cached = await cache.get(cacheKey)
+    const cached = cache.getDecoded(url, scale)
     if (cached) return cached
 
     // 在途合并：相同 cacheKey 的并发请求复用同一 Promise，避免多个子图重复网络/解码。
     const pending = inFlightImageLoads.get(cacheKey)
     if (pending) return await pending
 
-    // 网络+解码走全局限流器；可见瓦片高优先、预加载低优先，避免多图 stampede 打满连接池。
-    // signal 使尚未开始的（预加载）任务在切换/卸载时可被取消，及时把并发名额让给可见瓦片。
-    const task = runQueued(async () => {
-      let image
-      if (scale > 1) {
-        // 以更高的超采样倍率重新栅格化：拉取 SVG 源文本、放大根节点尺寸后再解码。
-        const response = await fetch(url, signal ? { signal } : undefined)
-        if (!response.ok) return null
-        const markup = scaleSvgMarkup(await response.text(), scale)
-        const blobUrl = URL.createObjectURL(new Blob([markup], { type: 'image/svg+xml' }))
-        try {
-          image = await decodeImage(blobUrl)
-        } finally {
-          URL.revokeObjectURL(blobUrl)
-        }
-      } else {
-        image = await decodeImage(url)
-      }
+    // IndexedDB 只保存一份原始 SVG。不同渲染倍率均从同一 Blob 解码，不再持久化 PNG。
+    const task = (async () => {
+      const source = await cacheSvgSource(url, priority, signal, scheduling)
+      if (!source) return null
 
-      if (!image) return null
-      cache.set(cacheKey, image)
-      return image
-    }, priority, signal)
+      let blob = source
+      if (scale > 1) blob = new Blob([scaleSvgMarkup(await source.text(), scale)], { type: 'image/svg+xml' })
+      const blobUrl = URL.createObjectURL(blob)
+      try {
+        const image = await decodeImage(blobUrl)
+        cache.setDecoded(url, scale, image)
+        return image
+      } finally {
+        URL.revokeObjectURL(blobUrl)
+      }
+    })()
 
     inFlightImageLoads.set(cacheKey, task)
     try {

@@ -4,6 +4,7 @@ import { feature } from 'topojson-client'
 
 import worldTopo from '../../source/110m.json'
 import chinaTopo from '../../source/bou2_4l.topo.simplify.json'
+import { fetchJsonShared } from '../../utils/jsonRequestCache'
 import { PRIORITY } from '../../utils/loadQueue'
 import { COLD_FRONT_LEVELS } from './constants'
 import {
@@ -15,6 +16,7 @@ import {
   isUsableLayerStatus,
   isFillLayerRecord,
   renderScaleForZoom,
+  cacheSvgSource,
   loadSvgImage
 } from './helpers'
 
@@ -23,8 +25,22 @@ import {
 //   n+1, n-1, n+2, n-2, n+3, n-3, n+4, n-4, n+5, n-5, n+6, n-6, n+7，共 13 个时效。
 const PRELOAD_FC_HOUR_OFFSETS = [1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7]
 
+// TopoJSON 转 GeoJSON 是纯计算且结果只读，所有单图/子图共享一次转换结果。
+let sharedBaseFeatures = null
+
+function baseFeatures() {
+  if (!sharedBaseFeatures) {
+    sharedBaseFeatures = {
+      world: feature(worldTopo, worldTopo.objects.land),
+      china: feature(chinaTopo, chinaTopo.objects.bou2_4l)
+    }
+  }
+  return sharedBaseFeatures
+}
+
 export function useWeatherData(store) {
   const {
+    initialView,
     canvasSize,
     zoomTransform,
     manifest,
@@ -55,6 +71,7 @@ export function useWeatherData(store) {
     hoverVortexTrack,
     compactView,
     compactPreloadFcHours,
+    syncId,
     cache,
     runtime,
     buildProjection,
@@ -67,17 +84,26 @@ export function useWeatherData(store) {
     requestDraw
   } = store
 
-  async function fetchJson(url) {
-    const response = await fetch(url, { cache: 'no-cache' })
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
-    return response.json()
+  const compactVisibleConcurrency = Math.max(1, Number(initialView?.maxLoadConcurrent) || 1)
+  // 多图中按父级分配的预算限制单个子图占用，避免先挂载的子图吃满全局队列。
+  // 单图不分组，仍可使用全部 8 个槽位。
+  const visibleScheduling = compactView
+    ? { groupKey: syncId || Symbol('compact-weather-view'), maxGroupConcurrent: compactVisibleConcurrency }
+    : {}
+  const preloadScheduling = compactView
+    ? { groupKey: visibleScheduling.groupKey, maxGroupConcurrent: 1 }
+    : {}
+
+  function fetchJson(url, maxAge = 30_000) {
+    return fetchJsonShared(url, { maxAge })
   }
 
   function loadWorld() {
     try {
       loadingState.map = '加载中'
-      worldFeatures.value = feature(worldTopo, worldTopo.objects.land)
-      chinaFeatures.value = feature(chinaTopo, chinaTopo.objects.bou2_4l)
+      const features = baseFeatures()
+      worldFeatures.value = features.world
+      chinaFeatures.value = features.china
       loadingState.map = '完成'
     } catch (error) {
       loadingState.map = `失败: ${error.message}`
@@ -93,7 +119,8 @@ export function useWeatherData(store) {
     loadingState.manifest = '加载中'
 
     try {
-      manifest.value = await fetchJson(`/data/products/${initTime.value}/manifest.json`)
+      // Manifest 仍由 SW 网络优先；这里只在同一批子图挂载期间短暂合并请求。
+      manifest.value = await fetchJson(`/data/products/${initTime.value}/manifest.json`, 2_000)
       loadingState.manifest = '完成'
       const manifestLevels = (manifest.value.levels || []).map(String)
       if (manifestFcHourSet.value && !manifestFcHourSet.value.has(fcHour.value)) {
@@ -111,12 +138,16 @@ export function useWeatherData(store) {
       loadingState.manifest = '未找到'
       errorMessage.value = `未找到 /data/products/${initTime.value}/manifest.json；仍可查看槽线 JSON。`
     } finally {
+      // 先完成用户最关心的 SVG，再并行补齐天气系统 JSON。原先逐项 await 会让每个
+      // 子图连续经历 5 次网络往返，多图下形成明显的阶梯式完成。
       await loadActiveLayer()
-      await loadTrough()
-      await loadColdFronts()
-      await loadJetAxes()
-      await loadVortexCenters()
-      await loadVortexTracks()
+      await Promise.all([
+        loadTrough(),
+        loadColdFronts(),
+        loadJetAxes(),
+        loadVortexCenters(),
+        loadVortexTracks()
+      ])
       requestDraw()
     }
   }
@@ -224,7 +255,7 @@ export function useWeatherData(store) {
 
   async function loadSvgTile(tile, renderScale = 1) {
     const url = tileUrl(tile)
-    const image = await loadSvgImage(url, renderScale)
+    const image = await loadSvgImage(url, renderScale, PRIORITY.HIGH, null, visibleScheduling)
     if (!image) return null
     return {
       image,
@@ -238,7 +269,7 @@ export function useWeatherData(store) {
 
   async function loadSvgLayer({ type, record }, order, renderScale = 1) {
     const url = layerUrl(record)
-    const image = await loadSvgImage(url, renderScale)
+    const image = await loadSvgImage(url, renderScale, PRIORITY.HIGH, null, visibleScheduling)
     if (!image) return null
     return {
       type,
@@ -325,7 +356,7 @@ export function useWeatherData(store) {
         await Promise.all(urls.map(async (url) => {
           if (runId !== runtime.preloadRunId || signal.aborted) return
           if (await cache.has(url)) return
-          await loadSvgImage(url, 1, PRIORITY.LOW, signal)
+          await cacheSvgSource(url, PRIORITY.LOW, signal, preloadScheduling)
         }))
       }
     } finally {
@@ -360,6 +391,7 @@ export function useWeatherData(store) {
   }
 
   async function loadTrough() {
+    const loadId = ++runtime.troughLoadId
     troughData.value = null
     hoverLine.value = null
     if (level.value === 'surface') {
@@ -371,16 +403,20 @@ export function useWeatherData(store) {
     const url = `/data/${initTime.value}/trough_data/trough_${initTime.value}_${fcHour.value}_${level.value}hPa_ecmwf.json`
     try {
       loadingState.trough = '加载中'
-      troughData.value = await fetchJson(url)
+      const data = await fetchJson(url)
+      if (loadId !== runtime.troughLoadId) return
+      troughData.value = data
       loadingState.trough = '完成'
     } catch {
+      if (loadId !== runtime.troughLoadId) return
       loadingState.trough = '缺失'
     } finally {
-      requestDraw()
+      if (loadId === runtime.troughLoadId) requestDraw()
     }
   }
 
   async function loadJetAxes() {
+    const loadId = ++runtime.jetLoadId
     jetData.value = null
     hoverJetLine.value = null
     if (level.value === 'surface') {
@@ -392,16 +428,20 @@ export function useWeatherData(store) {
     const url = `/data/${initTime.value}/jet_data/jet_${initTime.value}_${fcHour.value}_${level.value}hPa_ecmwf.json`
     try {
       loadingState.jet = '加载中'
-      jetData.value = await fetchJson(url)
+      const data = await fetchJson(url)
+      if (loadId !== runtime.jetLoadId) return
+      jetData.value = data
       loadingState.jet = '完成'
     } catch {
+      if (loadId !== runtime.jetLoadId) return
       loadingState.jet = '缺失'
     } finally {
-      requestDraw()
+      if (loadId === runtime.jetLoadId) requestDraw()
     }
   }
 
   async function loadColdFronts() {
+    const loadId = ++runtime.coldFrontLoadId
     coldFrontData.value = null
     if (!COLD_FRONT_LEVELS.has(String(level.value))) {
       loadingState.coldFront = '该层无冷锋产品'
@@ -412,16 +452,20 @@ export function useWeatherData(store) {
     const url = `/data/${initTime.value}/cold_fronts/cold_front_${initTime.value}_${fcHour.value}_${level.value}hPa.json`
     try {
       loadingState.coldFront = '加载中'
-      coldFrontData.value = await fetchJson(url)
+      const data = await fetchJson(url)
+      if (loadId !== runtime.coldFrontLoadId) return
+      coldFrontData.value = data
       loadingState.coldFront = '完成'
     } catch {
+      if (loadId !== runtime.coldFrontLoadId) return
       loadingState.coldFront = '缺失'
     } finally {
-      requestDraw()
+      if (loadId === runtime.coldFrontLoadId) requestDraw()
     }
   }
 
   async function loadVortexCenters() {
+    const loadId = ++runtime.vortexCentersLoadId
     vortexCenters.value = []
     hoverVortexCenter.value = null
     if (level.value === 'surface') {
@@ -435,10 +479,12 @@ export function useWeatherData(store) {
     try {
       loadingState.vortexCenters = '加载中'
       const centers = await fetchJson(centerUrl)
+      if (loadId !== runtime.vortexCentersLoadId) return
 
       if (String(level.value) === '850') {
         try {
           const warmCenters = await fetchJson(warmUrl)
+          if (loadId !== runtime.vortexCentersLoadId) return
           const warmByPosition = new Map(
             warmCenters.map((center) => [`${Number(center.lat).toFixed(4)}:${Number(center.lon).toFixed(4)}`, center])
           )
@@ -447,6 +493,7 @@ export function useWeatherData(store) {
             ...(warmByPosition.get(`${Number(center.lat).toFixed(4)}:${Number(center.lon).toFixed(4)}`) || {})
           }))
         } catch {
+          if (loadId !== runtime.vortexCentersLoadId) return
           vortexCenters.value = centers
         }
       } else {
@@ -455,9 +502,10 @@ export function useWeatherData(store) {
 
       loadingState.vortexCenters = '完成'
     } catch {
+      if (loadId !== runtime.vortexCentersLoadId) return
       loadingState.vortexCenters = '缺失'
     } finally {
-      requestDraw()
+      if (loadId === runtime.vortexCentersLoadId) requestDraw()
     }
   }
 

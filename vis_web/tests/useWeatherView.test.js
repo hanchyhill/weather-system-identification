@@ -294,7 +294,8 @@ describe('useWeatherView composition root', () => {
 
     assert.equal(harness.watchers.length, 9)
 
-    await findWatcher(harness, [harness.store.fcHour, harness.store.level]).callback()
+    findWatcher(harness, [harness.store.fcHour, harness.store.level]).callback()
+    await new Promise((resolve) => setTimeout(resolve, 180))
     assert.deepEqual(
       harness.calls.filter(([name]) => ['loadActiveLayer', 'loadTrough', 'loadColdFronts', 'loadJetAxes', 'loadVortexCenters'].includes(name)).map(([name]) => name),
       ['loadActiveLayer', 'loadTrough', 'loadColdFronts', 'loadJetAxes', 'loadVortexCenters']

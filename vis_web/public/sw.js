@@ -1,110 +1,103 @@
-/* 天气瓦片 Service Worker
- *
- * 职责三件事：
- * 1. 拦截 /data/products 下的 .svg 瓦片与 manifest.json，用 Cache Storage 做持久缓存，
- *    让主线程的 new Image().src / fetch 命中缓存时瞬时返回，把网络层从渲染路径上抹掉。
- * 2. 接受页面下发的 prefetch 指令，按 z0→z1→z2 分级预取指定起报时次的全部瓦片，
- *    受存储配额软上限约束、可被新指令随时中断。
- * 3. 接受 Web Push（Stage 2）：后端在新起报时次生成完成时推一条消息，
- *    唤醒本 SW 弹通知并后台预取该起报——即便页面已关闭。
- *
- * 缓存策略取舍：
- *   - 瓦片 (.svg)：cache-first。同一起报时次下某瓦片路径基本不可变，命中即返回不再打网络，
- *     这样才有性能收益；刷新由 prefetch/push 显式重取覆盖。
- *   - manifest.json：network-first。随新时效不断追加记录，需要新鲜度，网络失败再回落缓存。
- */
+import {
+  collectSvgUrls,
+  latestInitTime,
+  manifestVersion,
+  normalizePrefetchOptions,
+  optionsFingerprint,
+  shouldAcceptPush,
+  shouldReuseCompletedTask
+} from './swPrefetch.js'
 
-const CACHE_VERSION = 'v1'
-const TILE_CACHE = `weather-tiles-${CACHE_VERSION}`
-const DATA_PREFIX = '/data/products/'
-
-const SVG_RE = /\/data\/products\/.+\.svg$/
+const DB_NAME = 'WeatherSystemVisualization'
+const DB_VERSION = 2
+const SVG_STORE = 'svg_sources'
+const META_STORE = 'prefetch_meta'
+const LEGACY_STORE = 'svg_images'
+const EXPIRY_MS = 72 * 60 * 60 * 1000
+const MANIFEST_CACHE = 'weather-manifests-v2'
+const DATA_PREFIX = '/data/'
+const PRODUCT_PREFIX = '/data/products/'
 const MANIFEST_RE = /\/data\/products\/[^/]+\/manifest\.json$/
-
-// 预取并发（后台预取，别和当前视图抢太多带宽）
-const PREFETCH_CONCURRENCY = 6
-// 存储软上限：占用超过配额的该比例就停止继续预取，避免把用户磁盘塞满
+const PREFETCH_CONCURRENCY = 2
 const STORAGE_SOFT_LIMIT_RATIO = 0.6
-// 默认预取的瓦片层次：只到 z1（z2 数量大，默认不预取）；用户可在订阅弹窗里改
-const DEFAULT_Z_LEVELS = [0, 1]
-// 预取选项在 Cache 里的持久化键（供 push 唤醒时读取——那时页面可能已关闭）
-const OPTIONS_KEY = `${self.location.origin}/__weather_prefetch_options__`
+const FOREGROUND_IDLE_MS = 2000
 
-// 当前预取运行的中断令牌；收到新的 prefetch / cancelPrefetch 指令时把旧的置为 aborted
-let prefetchToken = null
+let currentTask = null
+let foregroundRequests = 0
+let foregroundIdleUntil = 0
+let resumeTimer = null
+let broadcastTimer = null
+let lastBroadcast = 0
+let status = {
+  state: 'idle', initTime: '', ready: 0, total: 0, downloaded: 0, failed: 0, reason: ''
+}
 
-self.addEventListener('install', () => {
-  // 新 SW 立即进入 activate，不等旧标签页全部关闭
-  self.skipWaiting()
-})
+self.addEventListener('install', () => self.skipWaiting())
 
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
-    // 清掉旧版本缓存
     const keys = await caches.keys()
-    await Promise.all(
-      keys
-        .filter((k) => k.startsWith('weather-tiles-') && k !== TILE_CACHE)
-        .map((k) => caches.delete(k))
-    )
-    // 首次注册后立即接管当前页面，使 controllerchange 触发页面的首轮预取
+    await Promise.all(keys.filter((key) => key.startsWith('weather-tiles-')).map((key) => caches.delete(key)))
+    await cleanupExpiredSources()
+    status = (await readMeta('status')) || status
     await self.clients.claim()
+    await broadcastStatus(true)
   })())
 })
 
 self.addEventListener('fetch', (event) => {
-  const req = event.request
-  if (req.method !== 'GET') return
-
-  let url
-  try {
-    url = new URL(req.url)
-  } catch {
-    return
-  }
-  if (url.origin !== self.location.origin) return
-
-  if (SVG_RE.test(url.pathname)) {
-    event.respondWith(cacheFirst(req))
-  } else if (MANIFEST_RE.test(url.pathname)) {
-    event.respondWith(networkFirst(req))
-  }
+  const request = event.request
+  if (request.method !== 'GET') return
+  const url = new URL(request.url)
+  if (url.origin !== self.location.origin || !url.pathname.startsWith(DATA_PREFIX)) return
+  foregroundStarted()
+  const responsePromise = MANIFEST_RE.test(url.pathname) ? networkFirstManifest(request) : fetch(request)
+  event.respondWith(responsePromise)
+  // 克隆流读完才算请求结束，空闲窗口不会从“刚收到响应头”过早开始。
+  event.waitUntil(responsePromise
+    .then((response) => response.clone().arrayBuffer())
+    .catch(() => {})
+    .finally(foregroundFinished))
 })
 
 self.addEventListener('message', (event) => {
   const data = event.data || {}
-  if (data.type === 'prefetch') {
-    startPrefetch(Array.isArray(data.initTimes) ? data.initTimes : [], data.options || {})
+  if (data.type === 'prefetchLatest') {
+    event.waitUntil(startPrefetch(data.initTime, data.options || {}))
+  } else if (data.type === 'prefetch') {
+    // 兼容旧页面，但只处理其中最新的起报时次。
+    event.waitUntil(startPrefetch(latestInitTime(data.initTimes), data.options || {}))
   } else if (data.type === 'cancelPrefetch') {
-    if (prefetchToken) prefetchToken.aborted = true
+    event.waitUntil(cancelPrefetch('disabled'))
   } else if (data.type === 'setPrefetchOptions') {
-    // 持久化用户的预取策略，供 push 唤醒时读取
-    event.waitUntil(savePrefetchOptions(data.options || {}))
+    event.waitUntil(saveOptions(data.options || {}))
+  } else if (data.type === 'getPrefetchStatus') {
+    event.waitUntil((async () => {
+      status = (await readMeta('status')) || status
+      await broadcastStatus(true)
+    })())
   }
 })
 
-// —— Web Push（Stage 2 启用；此处已就绪，未订阅时不会触发）——
 self.addEventListener('push', (event) => {
   let payload = {}
-  try {
-    payload = event.data ? event.data.json() : {}
-  } catch {
-    payload = {}
-  }
-  const initTime = payload.init_time || payload.initTime || null
+  try { payload = event.data ? event.data.json() : {} } catch { payload = {} }
+  const initTime = payload.init_time || payload.initTime || ''
   event.waitUntil((async () => {
-    // Chrome 强制 userVisibleOnly：每条 push 必须弹一条可见通知，否则会被惩罚/吊销订阅。
-    // 后端只在“新起报时次”推一次，因此通知频率约为每个 00/12 UTC 起报一次。
+    const storedOptions = await loadOptions()
+    const pushedOptions = payload.options && typeof payload.options === 'object' ? payload.options : {}
+    // enabled 以本机持久化总开关为准；服务端旧 payload 缺少该字段时不能意外重新开启。
+    const options = normalizePrefetchOptions({ ...storedOptions, ...pushedOptions, enabled: storedOptions.enabled !== false })
     await self.registration.showNotification('天气数据已更新', {
-      body: initTime ? `新起报时次 ${initTime} 已就绪，正在后台预加载` : '最新预报已生成',
-      tag: 'weather-update',
-      renotify: true,
-      data: { initTime }
+      body: initTime
+        ? `新起报时次 ${initTime} 已就绪${options.enabled ? '，正在后台预加载' : ''}`
+        : '最新预报已生成',
+      tag: 'weather-update', renotify: true, data: { initTime }
     })
-    if (initTime) {
-      // 页面可能已关闭，SW 内存里的选项会丢；优先用 payload，其次读持久化的用户策略
-      const options = (payload && payload.options) || (await loadPrefetchOptions())
-      await startPrefetch([initTime], options)
+    // 过期 Push 不能把一个更新任务替换成旧任务；关闭预加载时只发通知。
+    const persisted = (await readMeta('status')) || status
+    if (options.enabled && shouldAcceptPush(persisted.initTime, initTime)) {
+      await startPrefetch(initTime, options)
     }
   })())
 })
@@ -112,209 +105,283 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
   event.waitUntil((async () => {
-    const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
-    if (clientList.length) {
-      await clientList[0].focus()
-    } else {
-      await self.clients.openWindow('/')
-    }
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+    if (windows.length) await windows[0].focus()
+    else await self.clients.openWindow('/')
   })())
 })
 
-// —— 缓存策略 ——
-
-async function cacheFirst(req) {
-  const cache = await caches.open(TILE_CACHE)
-  const cached = await cache.match(req)
-  if (cached) return cached
-  try {
-    const res = await fetch(req)
-    if (res && res.ok) cache.put(req, res.clone())
-    return res
-  } catch (error) {
-    // 网络失败且未缓存：交还一个失败响应，让主线程按原有逻辑处理
-    return cached || Response.error()
-  }
+function foregroundStarted() {
+  foregroundRequests += 1
+  foregroundIdleUntil = Number.POSITIVE_INFINITY
+  if (resumeTimer) clearTimeout(resumeTimer)
+  resumeTimer = null
+  if (currentTask && !currentTask.controller.signal.aborted) currentTask.controller.abort()
+  if (currentTask) setStatus({ state: 'paused', reason: 'foreground-request' })
 }
 
-async function networkFirst(req) {
-  const cache = await caches.open(TILE_CACHE)
-  try {
-    const res = await fetch(req)
-    if (res && res.ok) cache.put(req, res.clone())
-    return res
-  } catch (error) {
-    const cached = await cache.match(req)
-    if (cached) return cached
-    return Response.error()
-  }
+function foregroundFinished() {
+  foregroundRequests = Math.max(0, foregroundRequests - 1)
+  if (foregroundRequests) return
+  foregroundIdleUntil = Date.now() + FOREGROUND_IDLE_MS
+  if (resumeTimer) clearTimeout(resumeTimer)
+  resumeTimer = setTimeout(() => {
+    resumeTimer = null
+    foregroundIdleUntil = 0
+    if (currentTask && status.state === 'paused') startPrefetch(currentTask.initTime, currentTask.options, true)
+  }, FOREGROUND_IDLE_MS)
 }
 
-// —— 分级预取 ——
-
-async function startPrefetch(initTimes, options) {
-  if (prefetchToken) prefetchToken.aborted = true
-  const token = { aborted: false }
-  prefetchToken = token
-  try {
-    await runPrefetch(initTimes, options, token)
-  } catch (error) {
-    // 预取是尽力而为，失败不影响主流程
-  }
+async function cancelPrefetch(nextState = 'idle') {
+  if (currentTask) currentTask.controller.abort()
+  currentTask = null
+  await setStatus({
+    state: nextState,
+    // 保留最近目标时次，用于拒绝迟到的旧 Push；计数则不再显示为当前活动任务。
+    initTime: status.initTime || '', ready: 0, total: 0, downloaded: 0, failed: 0,
+    optionsFingerprint: '', manifestVersion: '',
+    reason: nextState === 'disabled' ? 'disabled' : ''
+  })
 }
 
-async function runPrefetch(initTimes, options, token) {
-  if (!initTimes.length) return
-  const cache = await caches.open(TILE_CACHE)
+async function startPrefetch(initTime, rawOptions, resume = false) {
+  const options = normalizePrefetchOptions(rawOptions)
+  await saveOptions(options)
+  if (!options.enabled) return cancelPrefetch('disabled')
+  if (!initTime || !/^\d{10}$/.test(String(initTime))) return
 
-  // 先把每个起报的 manifest 拉到（network-first，顺带更新缓存）
-  const manifests = []
-  for (const init of initTimes) {
-    if (token.aborted) return
-    const manifest = await fetchManifest(cache, init)
-    if (manifest) manifests.push({ init, manifest })
+  const fingerprint = optionsFingerprint(options)
+  if (
+    !resume && currentTask && !currentTask.controller.signal.aborted &&
+    currentTask.initTime === String(initTime) && currentTask.fingerprint === fingerprint
+  ) {
+    await broadcastStatus(true)
+    return
   }
-  if (!manifests.length) return
+  const previous = (await readMeta('status')) || status
 
-  // 按用户选择的瓦片层次分级预取（默认 z0、z1）：z0 张数少覆盖广先灌满，再 z1、z2。
-  // 单 z 图层只有 z0，多 z 图层才有 z1/z2。
-  const zLevels = normalizeZLevels(options.zLevels)
-  for (const z of zLevels) {
-    if (token.aborted) return
-    if (await overStorageBudget()) return
-    const urls = []
-    for (const { init, manifest } of manifests) {
-      collectTileUrls(init, manifest, z, options, urls)
+  if (currentTask) currentTask.controller.abort()
+  const task = { initTime: String(initTime), options, fingerprint, controller: new AbortController() }
+  currentTask = task
+  if (foregroundRequests || Date.now() < foregroundIdleUntil) {
+    await setStatus({ ...baseTaskStatus(task), state: 'paused', reason: 'foreground-request' })
+    return
+  }
+
+  try {
+    await cleanupExpiredSources()
+    await setStatus({ ...baseTaskStatus(task), state: 'manifest' })
+    const manifest = await fetchManifest(task.initTime, task.controller.signal)
+    if (!manifest) throw new Error('manifest-unavailable')
+    if (task.controller.signal.aborted || currentTask !== task) return
+    const currentManifestVersion = manifestVersion(manifest)
+    if (!resume && shouldReuseCompletedTask(previous, task.initTime, fingerprint, currentManifestVersion)) {
+      currentTask = null
+      await setStatus(previous, true)
+      return
     }
-    if (urls.length) await prefetchUrls(cache, urls, token)
-  }
-}
 
-function normalizeZLevels(zLevels) {
-  if (Array.isArray(zLevels) && zLevels.length) {
-    const cleaned = zLevels.map(Number).filter((z) => z === 0 || z === 1 || z === 2)
-    if (cleaned.length) return [...new Set(cleaned)].sort((a, b) => a - b)
-  }
-  return DEFAULT_Z_LEVELS
-}
+    const urls = collectSvgUrls(task.initTime, manifest, options)
+    const taskStatus = {
+      ...baseTaskStatus(task),
+      state: 'prefetching',
+      manifestVersion: currentManifestVersion,
+      total: urls.length
+    }
+    let ready = 0
+    const missing = []
+    for (const url of urls) {
+      if (await hasFreshSource(url)) ready += 1
+      else missing.push(url)
+    }
+    taskStatus.ready = ready
+    await setStatus(taskStatus)
 
-async function savePrefetchOptions(options) {
-  try {
-    const cache = await caches.open(TILE_CACHE)
-    await cache.put(
-      OPTIONS_KEY,
-      new Response(JSON.stringify(options || {}), { headers: { 'Content-Type': 'application/json' } })
-    )
-  } catch {
-    // 持久化失败不影响主流程
-  }
-}
-
-async function loadPrefetchOptions() {
-  try {
-    const cache = await caches.open(TILE_CACHE)
-    const res = await cache.match(OPTIONS_KEY)
-    if (res) return await res.json()
-  } catch {
-    // 读取失败回落默认
-  }
-  return {}
-}
-
-function toSet(list) {
-  return Array.isArray(list) && list.length ? new Set(list.map(String)) : null
-}
-
-// 遍历 manifest.products[fc][level][layer].tiles[z]，按可选过滤器拼出瓦片 URL。
-// options 为空表示不过滤（尽量多预取，符合“预加载更多数据”的诉求）。
-function collectTileUrls(init, manifest, z, options, out) {
-  const products = manifest && manifest.products
-  if (!products) return
-
-  const zKey = String(z)
-  const fcFilter = toSet(options.fcHours)
-  const levelFilter = toSet(options.levels)
-  const layerFilter = toSet(options.layerTypes)
-
-  for (const fcHour of Object.keys(products)) {
-    if (fcFilter && !fcFilter.has(String(fcHour))) continue
-    const byLevel = products[fcHour]
-    if (!byLevel || typeof byLevel !== 'object') continue
-
-    for (const level of Object.keys(byLevel)) {
-      if (levelFilter && !levelFilter.has(String(level))) continue
-      const byLayer = byLevel[level]
-      if (!byLayer || typeof byLayer !== 'object') continue
-
-      for (const layerType of Object.keys(byLayer)) {
-        if (layerFilter && !layerFilter.has(String(layerType))) continue
-        const record = byLayer[layerType]
-        if (!record || record.status === 'failed') continue
-        const tiles = record.tiles && record.tiles[zKey]
-        if (!Array.isArray(tiles)) continue
-
-        for (const tile of tiles) {
-          if (!tile || tile.status === 'failed') continue
-          const url = tile.path
-            ? `${DATA_PREFIX}${init}/${tile.path}`
-            : `${DATA_PREFIX}${init}/${fcHour}/${level}/${layerType}/${z}/${tile.x}/${tile.y}.svg`
-          out.push(url)
+    let index = 0
+    async function worker() {
+      while (index < missing.length && !task.controller.signal.aborted) {
+        if (await overStorageBudget()) {
+          task.controller.abort()
+          await setStatus({ state: 'storage_limited', reason: 'storage-soft-limit' })
+          return
         }
+        const url = missing[index++]
+        try {
+          const response = await fetch(url, { credentials: 'same-origin', signal: task.controller.signal })
+          if (!response.ok) throw new Error(String(response.status))
+          const blob = await response.blob()
+          await putSource(url, blob, response.headers.get('content-type'), task.initTime)
+          taskStatus.ready += 1
+          taskStatus.downloaded += 1
+        } catch (error) {
+          if (task.controller.signal.aborted) return
+          taskStatus.failed += 1
+        }
+        if (task.controller.signal.aborted || currentTask !== task) return
+        await setStatus(taskStatus)
       }
+    }
+    await Promise.all(Array.from({ length: PREFETCH_CONCURRENCY }, () => worker()))
+    if (!task.controller.signal.aborted && currentTask === task) {
+      await setStatus({ ...taskStatus, state: 'complete', reason: '' }, true)
+      currentTask = null
+    }
+  } catch (error) {
+    if (!task.controller.signal.aborted && currentTask === task) {
+      await setStatus({ ...baseTaskStatus(task), state: 'error', reason: error?.message || 'unknown' }, true)
+      currentTask = null
     }
   }
 }
 
-async function prefetchUrls(cache, urls, token) {
-  let index = 0
-  async function worker() {
-    while (index < urls.length && !token.aborted) {
-      const url = urls[index++]
-      const existing = await cache.match(url)
-      if (existing) continue
-      try {
-        const res = await fetch(url, { credentials: 'same-origin' })
-        if (res && res.ok) await cache.put(url, res.clone())
-      } catch {
-        // 单张失败忽略
-      }
-    }
+function baseTaskStatus(task) {
+  return {
+    initTime: task.initTime,
+    optionsFingerprint: task.fingerprint,
+    manifestVersion: '', ready: 0, total: 0, downloaded: 0, failed: 0, reason: ''
   }
-  const workers = []
-  for (let w = 0; w < PREFETCH_CONCURRENCY; w++) workers.push(worker())
-  await Promise.all(workers)
 }
 
-async function fetchManifest(cache, init) {
-  const url = `${DATA_PREFIX}${init}/manifest.json`
+async function setStatus(changes, immediate = false) {
+  status = { ...status, ...changes }
+  await writeMeta({ key: 'status', ...status })
+  await broadcastStatus(immediate)
+}
+
+async function broadcastStatus(immediate = false) {
+  const elapsed = Date.now() - lastBroadcast
+  if (!immediate && elapsed < 150) {
+    if (!broadcastTimer) broadcastTimer = setTimeout(() => {
+      broadcastTimer = null
+      broadcastStatus(true)
+    }, 150 - elapsed)
+    return
+  }
+  lastBroadcast = Date.now()
+  const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+  const payload = {
+    type: 'prefetchStatus', state: status.state, initTime: status.initTime || '',
+    ready: status.ready || 0, total: status.total || 0, downloaded: status.downloaded || 0,
+    failed: status.failed || 0, reason: status.reason || ''
+  }
+  for (const client of windows) client.postMessage(payload)
+}
+
+async function networkFirstManifest(request) {
+  const cache = await caches.open(MANIFEST_CACHE)
   try {
-    const res = await fetch(url, { credentials: 'same-origin', cache: 'no-cache' })
-    if (res && res.ok) {
-      cache.put(url, res.clone())
-      return await res.json()
+    const response = await fetch(request)
+    if (response.ok) {
+      await cache.put(request, response.clone())
+      return response
     }
+    return await cache.match(request) || response
   } catch {
-    // 落到缓存兜底
+    return await cache.match(request) || Response.error()
   }
-  const cached = await cache.match(url)
-  if (cached) {
-    try {
-      return await cached.json()
-    } catch {
-      return null
+}
+
+async function fetchManifest(initTime, signal) {
+  const request = new Request(new URL(`${PRODUCT_PREFIX}${initTime}/manifest.json`, self.location.origin), { credentials: 'same-origin' })
+  const cache = await caches.open(MANIFEST_CACHE)
+  try {
+    const response = await fetch(request, { cache: 'no-cache', signal })
+    if (response.ok) {
+      await cache.put(request, response.clone())
+      return await response.json()
     }
+  } catch (error) {
+    if (signal.aborted) throw error
   }
-  return null
+  const cached = await cache.match(request)
+  return cached ? await cached.json() : null
+}
+
+function openDatabase() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION)
+    request.onupgradeneeded = () => {
+      const db = request.result
+      if (db.objectStoreNames.contains(LEGACY_STORE)) db.deleteObjectStore(LEGACY_STORE)
+      if (!db.objectStoreNames.contains(SVG_STORE)) {
+        const store = db.createObjectStore(SVG_STORE, { keyPath: 'url' })
+        store.createIndex('expiry', 'expiry')
+        store.createIndex('initTime', 'initTime')
+      }
+      if (!db.objectStoreNames.contains(META_STORE)) db.createObjectStore(META_STORE, { keyPath: 'key' })
+    }
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+}
+
+async function readMeta(key) {
+  try {
+    const db = await openDatabase()
+    return await idbRequest(db.transaction(META_STORE, 'readonly').objectStore(META_STORE).get(key))
+  } catch { return null }
+}
+
+async function writeMeta(value) {
+  try {
+    const db = await openDatabase()
+    await idbRequest(db.transaction(META_STORE, 'readwrite').objectStore(META_STORE).put(value))
+  } catch { /* 缓存元数据写入失败不影响页面 */ }
+}
+
+function idbRequest(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+}
+
+async function saveOptions(options) {
+  await writeMeta({ key: 'options', ...normalizePrefetchOptions(options) })
+}
+
+async function loadOptions() {
+  return (await readMeta('options')) || {}
+}
+
+async function hasFreshSource(url) {
+  try {
+    const db = await openDatabase()
+    const item = await idbRequest(db.transaction(SVG_STORE, 'readonly').objectStore(SVG_STORE).get(url))
+    return Boolean(item && item.expiry > Date.now())
+  } catch { return false }
+}
+
+async function putSource(url, blob, contentType, initTime) {
+  const db = await openDatabase()
+  const now = Date.now()
+  await idbRequest(db.transaction(SVG_STORE, 'readwrite').objectStore(SVG_STORE).put({
+    url, blob, contentType: contentType || blob.type || 'image/svg+xml', initTime,
+    cachedAt: now, expiry: now + EXPIRY_MS
+  }))
+}
+
+async function cleanupExpiredSources() {
+  try {
+    const db = await openDatabase()
+    await new Promise((resolve) => {
+      const tx = db.transaction(SVG_STORE, 'readwrite')
+      const request = tx.objectStore(SVG_STORE).index('expiry').openCursor(IDBKeyRange.upperBound(Date.now()))
+      request.onsuccess = () => {
+        const cursor = request.result
+        if (!cursor) return
+        cursor.delete()
+        cursor.continue()
+      }
+      tx.oncomplete = resolve
+      tx.onerror = resolve
+    })
+  } catch { /* 尽力清理 */ }
 }
 
 async function overStorageBudget() {
   try {
-    if (navigator.storage && navigator.storage.estimate) {
-      const { usage = 0, quota = 0 } = await navigator.storage.estimate()
-      if (quota && usage / quota > STORAGE_SOFT_LIMIT_RATIO) return true
-    }
-  } catch {
-    // 估算不可用时不做限制
-  }
-  return false
+    const { usage = 0, quota = 0 } = await navigator.storage.estimate()
+    return Boolean(quota && usage / quota >= STORAGE_SOFT_LIMIT_RATIO)
+  } catch { return false }
 }

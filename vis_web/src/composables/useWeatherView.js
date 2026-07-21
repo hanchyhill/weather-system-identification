@@ -73,6 +73,7 @@ export function useWeatherView(initialView = {}) {
     showWarmOnlyCenters,
     showTooltip,
     showTileDebug,
+    showGraticule,
     troughMinLength,
     troughMinWindSpeed,
     troughLineWidth,
@@ -180,12 +181,19 @@ export function useWeatherView(initialView = {}) {
     if (multiMapMode.value) openMultiMap(multiMapMode.value)
   }, { deep: true })
 
-  watch([fcHour, level], async () => {
-    await loadActiveLayer()
-    await loadTrough()
-    await loadColdFronts()
-    await loadJetAxes()
-    await loadVortexCenters()
+  // 连续快速切换预报时效（拖动滑块/滚轮/连点箭头）时，用去抖合并这些变化：
+  // 仅在停止后加载“最终时效”的图层与天气系统，跳过中间时效的加载与渲染，
+  // 消除天气系统显示慢半拍的问题。JSON 加载器内另有 loadId 防过期守卫作为兜底。
+  watch([fcHour, level], () => {
+    if (runtime.fcReloadTimer) clearTimeout(runtime.fcReloadTimer)
+    runtime.fcReloadTimer = setTimeout(async () => {
+      runtime.fcReloadTimer = null
+      await loadActiveLayer()
+      await loadTrough()
+      await loadColdFronts()
+      await loadJetAxes()
+      await loadVortexCenters()
+    }, 150)
   })
 
   watch(selectedLayerTypes, async () => {
@@ -208,6 +216,7 @@ export function useWeatherView(initialView = {}) {
     showWarmOnlyCenters,
     showTooltip,
     showTileDebug,
+    showGraticule,
     troughMinLength,
     troughMinWindSpeed,
     troughLineWidth,
@@ -290,6 +299,10 @@ export function useWeatherView(initialView = {}) {
     window.removeEventListener('keydown', handleDrawKeydown)
     // 卸载（含多图切换页导致子图 remount）时取消预加载，中止在途预取、释放并发名额。
     cancelPreload()
+    if (runtime.fcReloadTimer) {
+      clearTimeout(runtime.fcReloadTimer)
+      runtime.fcReloadTimer = null
+    }
     if (canvasRef.value) d3.select(canvasRef.value).on('.zoom', null)
   })
 
@@ -430,6 +443,7 @@ export function useWeatherView(initialView = {}) {
     showRawPoints,
     showSvgLayer,
     showTileDebug,
+    showGraticule,
     showTooltip,
     showTrough,
     showVortexCenters,

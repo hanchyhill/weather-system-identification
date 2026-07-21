@@ -6,6 +6,9 @@ import { drawShape } from '../../utils/mapDrawing'
 import { CONTOUR_DILATION_OFFSETS, SHEAR_COLORS } from './constants'
 import {
   getTileZoom,
+  graticuleStep,
+  formatLonTick,
+  formatLatTick,
   layerDrawPriority,
   isUsableLayerStatus,
   contourDilationRadius,
@@ -42,6 +45,7 @@ export function useMapRenderer(store) {
     showJetArrowHeads,
     showFutureVortexTracks,
     showOnlyFutureVortexTracks,
+    showGraticule,
     fcHour,
     troughLineWidth,
     jetLineWidth,
@@ -88,7 +92,7 @@ export function useMapRenderer(store) {
 
     drawWeatherLayers(context, projection, true)
     drawBaseMap(context, path)
-    drawGraticule(context, projection)
+    if (showGraticule.value) drawGraticule(context, projection)
     drawWeatherLayers(context, projection, false)
     drawTroughLines(context, projection)
     drawColdFrontLines(context, projection)
@@ -99,6 +103,7 @@ export function useMapRenderer(store) {
     drawTileDebug(context, projection)
 
     context.restore()
+    if (showGraticule.value) drawGraticuleAxes(context, projection)
     drawHudFrame(context)
     drawSynchronizedCursor(context, projection)
   }
@@ -146,7 +151,7 @@ export function useMapRenderer(store) {
   }
 
   function drawGraticule(context, projection) {
-    const interval = zoomTransform.value.k >= 4 ? 5 : zoomTransform.value.k >= 2 ? 10 : 15
+    const interval = graticuleStep(zoomTransform.value.k)
     const path = d3.geoPath(projection, context)
     const bounds = store.manifestBounds()
     const graticule = d3.geoGraticule()
@@ -160,6 +165,71 @@ export function useMapRenderer(store) {
     context.setLineDash([3 / zoomTransform.value.k, 3 / zoomTransform.value.k])
     context.stroke()
     context.setLineDash([])
+  }
+
+  // 屏幕空间绘制经纬度坐标轴：沿画布底边标注经度、沿左边标注纬度。
+  // 在 context.restore() 之后调用，坐标使用 CSS 像素（不随缩放放大），刻度位置由投影反算。
+  function drawGraticuleAxes(context, projection) {
+    const { width, height } = canvasSize
+    const interval = graticuleStep(zoomTransform.value.k)
+    const bounds = store.manifestBounds()
+    const midLon = (bounds.lon_min + bounds.lon_max) / 2
+    const midLat = (bounds.lat_min + bounds.lat_max) / 2
+
+    const axisWidth = 34
+    const axisHeight = 20
+
+    context.save()
+    // 半透明底衬，保证刻度在图层之上仍清晰可读。
+    context.fillStyle = 'rgba(246, 248, 251, 0.82)'
+    context.fillRect(0, height - axisHeight, width, axisHeight)
+    context.fillRect(0, 0, axisWidth, height - axisHeight)
+
+    context.font = '600 11px "PingFang SC", "Microsoft YaHei", sans-serif'
+    context.fillStyle = 'rgba(31, 41, 55, 0.9)'
+    context.strokeStyle = 'rgba(76, 89, 105, 0.5)'
+    context.lineWidth = 1
+
+    // 经度刻度（底边）
+    context.textAlign = 'center'
+    context.textBaseline = 'bottom'
+    const lonStart = Math.ceil(bounds.lon_min / interval) * interval
+    for (let lon = lonStart; lon <= bounds.lon_max + 1e-6; lon += interval) {
+      const point = transformedPoint(projection, [lon, midLat])
+      if (!point) continue
+      const x = point[0]
+      if (x < axisWidth || x > width) continue
+      context.beginPath()
+      context.moveTo(x, height - axisHeight)
+      context.lineTo(x, height - axisHeight + 4)
+      context.stroke()
+      context.fillText(formatLonTick(lon), x, height - 4)
+    }
+
+    // 纬度刻度（左边）
+    context.textAlign = 'left'
+    context.textBaseline = 'middle'
+    const latStart = Math.ceil(bounds.lat_min / interval) * interval
+    for (let lat = latStart; lat <= bounds.lat_max + 1e-6; lat += interval) {
+      const point = transformedPoint(projection, [midLon, lat])
+      if (!point) continue
+      const y = point[1]
+      if (y < 0 || y > height - axisHeight) continue
+      context.beginPath()
+      context.moveTo(axisWidth - 4, y)
+      context.lineTo(axisWidth, y)
+      context.stroke()
+      context.fillText(formatLatTick(lat), 3, y)
+    }
+
+    // 坐标轴基线
+    context.strokeStyle = 'rgba(76, 89, 105, 0.7)'
+    context.beginPath()
+    context.moveTo(axisWidth, 0)
+    context.lineTo(axisWidth, height - axisHeight)
+    context.lineTo(width, height - axisHeight)
+    context.stroke()
+    context.restore()
   }
 
   function drawWeatherLayers(context, projection, fillLayers) {
