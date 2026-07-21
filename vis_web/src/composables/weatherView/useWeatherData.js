@@ -163,7 +163,7 @@ export function useWeatherData(store) {
     const projection = buildProjection()
     const tileZoom = getTileZoom(zoomTransform.value.k)
     runtime.loadedTileZoom = tileZoom
-    const renderScale = renderScaleForZoom(zoomTransform.value.k, compactView)
+    const renderScale = renderScaleForZoom(zoomTransform.value.k, compactView, canvasSize)
     runtime.loadedRenderScale = renderScale
     const candidates = selectedLayerTypes.value.map((type) => ({
       type,
@@ -190,6 +190,11 @@ export function useWeatherData(store) {
       loadingState.svg = missingCount
         ? `${activeSvgLayers.value.length}层完成 / ${missingCount}层缺失`
         : `${activeSvgLayers.value.length}层完成`
+      // 加载期间若布局跨过了分辨率档位，立即按最新尺寸补一次，避免保留旧尺寸位图。
+      if (renderScale !== renderScaleForZoom(zoomTransform.value.k, compactView, canvasSize)) {
+        loadActiveLayer()
+        return
+      }
       schedulePreload()
     } finally {
       requestDraw()

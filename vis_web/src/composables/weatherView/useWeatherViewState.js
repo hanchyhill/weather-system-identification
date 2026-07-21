@@ -48,6 +48,8 @@ export function createRuntime() {
     preloadAbortController: null,
     // 预报时效/层次切换的去抖定时器：连续快速切换时只加载停下后的最终时效。
     fcReloadTimer: null,
+    // 多图 canvas 跨分辨率档位后的 SVG 重载去抖计时器。
+    resolutionReloadTimer: null,
     // 天气系统 JSON 加载的防过期令牌：乱序返回的旧响应据此丢弃，避免慢半拍覆盖。
     troughLoadId: 0,
     coldFrontLoadId: 0,
@@ -140,7 +142,7 @@ export function createWeatherViewStore(initialView = {}) {
   const activeSystemTab = ref('trough')
   const troughMinLength = ref(0)
   const troughMinWindSpeed = ref(3.0)
-  const troughLineWidth = ref(1.2)
+  const troughLineWidth = ref(2.0)
   const troughShearFiltersByLevel = reactive({})
 
   const jetMinAxisLength = ref(6.5)

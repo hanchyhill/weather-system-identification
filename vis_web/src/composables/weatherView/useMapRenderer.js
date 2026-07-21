@@ -5,6 +5,7 @@ import * as d3 from 'd3'
 import { drawShape } from '../../utils/mapDrawing'
 import { CONTOUR_DILATION_OFFSETS, SHEAR_COLORS } from './constants'
 import {
+  canvasPixelRatioForSize,
   getTileZoom,
   graticuleStep,
   formatLonTick,
@@ -64,9 +65,9 @@ export function useMapRenderer(store) {
     const canvas = canvasRef.value
     if (!canvas) return
     const context = canvas.getContext('2d')
-    // compact（多图子图）固定 1×：子图尺寸小，不随设备像素比放大位图，显著降低
-    // 每个子图的栅格/绘制成本与显存占用；单图仍用完整 devicePixelRatio 保持清晰。
-    const ratio = compactView ? 1 : (window.devicePixelRatio || 1)
+    // 多图根据子画布实际面积动态分配 backing store 像素比；小面板保持低成本，
+    // 面板变大时逐档接近设备 DPR。单图始终使用完整 DPR。
+    const ratio = canvasPixelRatioForSize(canvasSize, compactView, window.devicePixelRatio || 1)
     const targetWidth = Math.floor(canvasSize.width * ratio)
     const targetHeight = Math.floor(canvasSize.height * ratio)
     // 仅在尺寸变化时才重设 canvas.width/height：赋值会清空并重新分配整块 backing store，
@@ -302,7 +303,7 @@ export function useMapRenderer(store) {
         else context.lineTo(xy[0], xy[1])
       })
       context.strokeStyle = SHEAR_COLORS[line.shear_type] || '#111827'
-      context.lineWidth = Math.max(troughLineWidth.value / zoomTransform.value.k, 0.65)
+      context.lineWidth = troughLineWidth.value / zoomTransform.value.k
       context.lineCap = 'round'
       context.lineJoin = 'round'
       context.stroke()

@@ -292,7 +292,7 @@ describe('useWeatherView composition root', () => {
     globalThis.__weatherViewHarness = harness
     useWeatherView()
 
-    assert.equal(harness.watchers.length, 9)
+    assert.equal(harness.watchers.length, 10)
 
     findWatcher(harness, [harness.store.fcHour, harness.store.level]).callback()
     await new Promise((resolve) => setTimeout(resolve, 180))

@@ -65,6 +65,11 @@ export const CONTOUR_DILATION_OFFSETS = [
 // 2 倍在清晰度与性能之间更平衡，并把提升阈值适当抬高，减少高倍率下的重载与内存占用。
 export const RENDER_SCALE_MAX = 2
 
+// 多图子画布以单图默认画布为分辨率基准。子图只需要生成与其实际显示面积相称的
+// backing store / SVG 位图，避免把 960×640 单图的采样预算原样复制到每个小面板。
+export const MULTI_MAP_REFERENCE_SIZE = { width: 960, height: 640 }
+export const MULTI_MAP_RENDER_SCALES = [0.5, 0.75, 1, 1.5, RENDER_SCALE_MAX]
+
 // —— 手绘图形（多常用天气图元）——
 // 每个图形以经纬度存储，随地图平移缩放。kind：line/box/point；render 决定样式。
 export const DRAW_TOOLS = [

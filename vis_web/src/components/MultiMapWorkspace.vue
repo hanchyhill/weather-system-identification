@@ -231,7 +231,7 @@ function buildCompositeCanvas(gridEl) {
   ctx.restore()
 
   // 第二遍：将各子画布贴入合成图对应的单元格区域。子图 canvas 的原生分辨率可能低于
-  // 合成图的设备像素（compact 固定 1×，而合成图按完整 devicePixelRatio），故按目标 CSS
+  // 合成图的设备像素（子图会按实际尺寸动态选择 backing store 像素比），故按目标 CSS
   // 尺寸 × scale 显式指定绘制宽高，让浏览器缩放贴合单元格，保持与屏幕一致的视觉大小。
   panelEls.forEach((panelEl) => {
     const canvasEl = panelEl.querySelector('canvas')

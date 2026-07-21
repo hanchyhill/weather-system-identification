@@ -3,7 +3,6 @@
 import { sharedSvgImageCache } from '../../utils/indexedDBCache'
 import { runQueued, PRIORITY } from '../../utils/loadQueue'
 import {
-  RENDER_SCALE_MAX,
   FILL_LAYER_TYPES,
   WIND_OVERLAY_LAYER_TYPES,
   CONTOUR_REFERENCE_ZOOM,
@@ -16,20 +15,17 @@ import {
   MULTI_ELEMENT_FORECAST_CONFIGURATION_STORAGE_KEY,
   MAP_VIEW_STORAGE_KEY
 } from './constants'
+export {
+  canvasPixelRatioForSize,
+  multiMapSizeFactor,
+  renderScaleForZoom
+} from './multiMapResolution'
 
 // 在途请求合并表（模块级，跨所有视图实例共享）：多个子图/单图同时请求同一 cacheKey 时，
 // 只发起一次网络+解码，其余等待同一 Promise。键与内存缓存一致（含 @Nx 超采样后缀）。
 const inFlightImageLoads = new Map()
 const inFlightSourceLoads = new Map()
 const cache = sharedSvgImageCache
-
-// compact（多图子图）恒为 1：子图在屏上很小，超采样带来的清晰度提升不可感知，
-// 却会让位图像素数翻倍、重栅格化/绘制/内存显著增加，故直接封顶为 1。
-export function renderScaleForZoom(k, compact = false) {
-  if (compact) return 1
-  if (!(k > 8)) return 1
-  return RENDER_SCALE_MAX
-}
 
 // —— 通用数值 —— //
 export function formatNumber(value, digits = 2) {
@@ -282,8 +278,9 @@ export async function cacheSvgSource(url, priority = PRIORITY.LOW, signal = null
 
 export async function loadSvgImage(url, renderScale = 1, priority = PRIORITY.HIGH, signal = null, scheduling = {}) {
   if (!url) return null
-  const scale = renderScale > 1 ? renderScale : 1
-  const cacheKey = scale > 1 ? `${url}@${scale}x` : url
+  const numericScale = Number(renderScale)
+  const scale = Number.isFinite(numericScale) && numericScale > 0 ? numericScale : 1
+  const cacheKey = `${url}@${scale}x`
   try {
     const cached = cache.getDecoded(url, scale)
     if (cached) return cached
@@ -298,7 +295,7 @@ export async function loadSvgImage(url, renderScale = 1, priority = PRIORITY.HIG
       if (!source) return null
 
       let blob = source
-      if (scale > 1) blob = new Blob([scaleSvgMarkup(await source.text(), scale)], { type: 'image/svg+xml' })
+      if (scale !== 1) blob = new Blob([scaleSvgMarkup(await source.text(), scale)], { type: 'image/svg+xml' })
       const blobUrl = URL.createObjectURL(blob)
       try {
         const image = await decodeImage(blobUrl)

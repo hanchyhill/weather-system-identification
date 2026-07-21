@@ -204,6 +204,22 @@ export function useWeatherView(initialView = {}) {
     await loadActiveLayer()
   })
 
+  // 多图子画布跨过分辨率档位时才重新栅格化 SVG。同一档内的布局变化只触发 canvas
+  // 重绘；短去抖用于合并窗口拖动和网格重排产生的一串 ResizeObserver 回调。
+  watch(
+    () => [canvasSize.width, canvasSize.height],
+    () => {
+      if (!compactView || !activeSvgLayers.value.length) return
+      const nextRenderScale = renderScaleForZoom(zoomTransform.value.k, true, canvasSize)
+      if (nextRenderScale === runtime.loadedRenderScale) return
+      if (runtime.resolutionReloadTimer) clearTimeout(runtime.resolutionReloadTimer)
+      runtime.resolutionReloadTimer = setTimeout(() => {
+        runtime.resolutionReloadTimer = null
+        loadActiveLayer()
+      }, 120)
+    }
+  )
+
   watch([
     showSvgLayer,
     showTrough,
@@ -272,7 +288,7 @@ export function useWeatherView(initialView = {}) {
           }
         }
         const nextTileZoom = getTileZoom(event.transform.k)
-        const nextRenderScale = renderScaleForZoom(event.transform.k, compactView)
+        const nextRenderScale = renderScaleForZoom(event.transform.k, compactView, canvasSize)
         const tileZoomChanged = selectedLayerHasTiles() && nextTileZoom !== runtime.loadedTileZoom
         const renderScaleChanged = nextRenderScale !== runtime.loadedRenderScale && activeSvgLayers.value.length > 0
         if (tileZoomChanged || renderScaleChanged) {
@@ -302,6 +318,10 @@ export function useWeatherView(initialView = {}) {
     if (runtime.fcReloadTimer) {
       clearTimeout(runtime.fcReloadTimer)
       runtime.fcReloadTimer = null
+    }
+    if (runtime.resolutionReloadTimer) {
+      clearTimeout(runtime.resolutionReloadTimer)
+      runtime.resolutionReloadTimer = null
     }
     if (canvasRef.value) d3.select(canvasRef.value).on('.zoom', null)
   })

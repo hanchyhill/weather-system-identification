@@ -54,7 +54,9 @@ export class SvgImageCache {
   }
 
   decodedKey(url, scale = 1) {
-    return `${url}@${scale > 1 ? scale : 1}x`
+    const numericScale = Number(scale)
+    const normalizedScale = Number.isFinite(numericScale) && numericScale > 0 ? numericScale : 1
+    return `${url}@${normalizedScale}x`
   }
 
   touchMemory(key, image) {
