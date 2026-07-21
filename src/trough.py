@@ -334,17 +334,16 @@ def split_lines_by_max_length(lines, max_line_length=None):
             result.append(line)
             continue
 
-        gaps = np.linalg.norm(np.diff(line, axis=0), axis=1)
-        split_index = int(np.argmax(gaps)) + 1
-        left = line[:split_index]
-        right = line[split_index:]
-
-        # 两点线无法继续拆成有效折线，保留它并避免死循环。
-        if len(line) == 2:
+        # 只在能让左右两侧都至少保留两个点的位置中寻找最大间隙，
+        # 防止线首/线尾的最大间隙产生单点段并造成原始点消失。
+        if len(line) < 4:
             result.append(line)
             continue
-        valid_segments = [segment for segment in (left, right) if len(segment) >= 2]
-        pending[0:0] = valid_segments
+        gaps = np.linalg.norm(np.diff(line, axis=0), axis=1)
+        split_index = int(np.argmax(gaps[1:-1])) + 2
+        left = line[:split_index]
+        right = line[split_index:]
+        pending[0:0] = [left, right]
 
     return result
 
@@ -364,7 +363,7 @@ def _turn_angle(line, point_index, window=1):
 
 
 def split_lines_by_turn_angle(lines, max_turn_angle=None, turn_angle_window=1):
-    """在局部转向角过大的原始点处分段，并让相邻分段共享转折点。"""
+    """在局部转向角过大的原始点后断开，相邻分段不共享端点。"""
     if max_turn_angle is None:
         return [np.asarray(line) for line in lines]
     if not 0 < max_turn_angle < 180:
@@ -379,21 +378,89 @@ def split_lines_by_turn_angle(lines, max_turn_angle=None, turn_angle_window=1):
             result.append(line)
             continue
 
-        split_indices = [
-            index for index in range(1, len(line) - 1)
-            if _turn_angle(line, index, turn_angle_window) > max_turn_angle
+        turn_angles = [
+            (index, _turn_angle(line, index, turn_angle_window))
+            for index in range(1, len(line) - 1)
         ]
+        candidates = [item for item in turn_angles if item[1] > max_turn_angle]
+
+        # 一个宽弯曲区经常有多个连续点同时超阈值；每个连续区只在最大角度点
+        # 拆一次，避免产生大量相邻的两点碎段。
+        candidate_groups = []
+        for candidate in candidates:
+            if not candidate_groups or candidate[0] > candidate_groups[-1][-1][0] + 1:
+                candidate_groups.append([candidate])
+            else:
+                candidate_groups[-1].append(candidate)
+        start = 0
+        split_indices = []
+        for group in candidate_groups:
+            # 在split_index和下一点之间断开，左右各至少保留3个控制点。
+            eligible = [
+                item for item in group
+                if item[0] - start >= 2 and len(line) - item[0] >= 4
+            ]
+            if not eligible:
+                continue
+            split_index = max(eligible, key=lambda item: item[1])[0]
+            split_indices.append(split_index)
+            start = split_index + 1
+
         start = 0
         for split_index in split_indices:
             segment = line[start:split_index + 1]
-            if len(segment) >= 2:
+            if len(segment) >= 3:
                 result.append(segment)
-            start = split_index
+            start = split_index + 1
         final_segment = line[start:]
-        if len(final_segment) >= 2:
+        if len(final_segment) >= 3:
             result.append(final_segment)
 
     return result
+
+
+def trim_nearby_line_endpoints(lines, nearby_distance=None, trim_length=0.0):
+    """仅为绘图裁短相邻线段端部；输入的完整贝塞尔点不会被修改。"""
+    plot_lines = [np.asarray(line).copy() for line in lines]
+    if nearby_distance is None or nearby_distance <= 0 or trim_length <= 0:
+        return plot_lines
+
+    trim_flags = [[False, False] for _ in plot_lines]
+    for left_index, left in enumerate(plot_lines):
+        if len(left) < 2:
+            continue
+        for right_index in range(left_index + 1, len(plot_lines)):
+            right = plot_lines[right_index]
+            if len(right) < 2:
+                continue
+            for left_side, left_point in enumerate((left[0], left[-1])):
+                for right_side, right_point in enumerate((right[0], right[-1])):
+                    endpoint_distance = np.linalg.norm(left_point - right_point)
+                    if endpoint_distance <= nearby_distance:
+                        trim_flags[left_index][left_side] = True
+                        trim_flags[right_index][right_side] = True
+
+    def trim_one_end(line, from_start):
+        oriented = line if from_start else line[::-1]
+        cumulative = np.concatenate((
+            [0.0],
+            np.cumsum(np.linalg.norm(np.diff(oriented, axis=0), axis=1)),
+        ))
+        trim_index = int(np.searchsorted(cumulative, trim_length, side='left'))
+        # 至少保留两个绘图点。
+        trim_index = min(trim_index, len(oriented) - 2)
+        trimmed = oriented[trim_index:]
+        return trimmed if from_start else trimmed[::-1]
+
+    for index, (trim_start, trim_end) in enumerate(trim_flags):
+        line = plot_lines[index]
+        if trim_start:
+            line = trim_one_end(line, from_start=True)
+        if trim_end:
+            line = trim_one_end(line, from_start=False)
+        plot_lines[index] = line
+
+    return plot_lines
 
 
 def process_and_plot_shear_lines(points, uwnd, vwnd, interval_dis, length_min, smoothness,
@@ -402,7 +469,9 @@ def process_and_plot_shear_lines(points, uwnd, vwnd, interval_dis, length_min, s
                                  shear_type, smooth_method='spline',
                                  num_points=100, num_control_points=None,
                                  max_line_length=None, max_turn_angle=None,
-                                 turn_angle_window=1):
+                                 turn_angle_window=1, segment_length_min=None,
+                                 visual_gap_distance=None, visual_gap_length=0.0,
+                                 show_all_raw_points=False, raw_point_size=4.0):
     """
     处理切变点数据并绘制切变线的通用函数
 
@@ -427,20 +496,41 @@ def process_and_plot_shear_lines(points, uwnd, vwnd, interval_dis, length_min, s
     - max_line_length: float或None, 原始槽线最大累计长度；超限时在最大点间隙处拆分
     - max_turn_angle: float或None, 局部最大转向角；超限时在转折点处拆分
     - turn_angle_window: int, 计算局部转向角时向两侧取的原始点数
+    - segment_length_min: float或None, 拆分后线段的最小长度；None时沿用length_min
+    - visual_gap_distance: float或None, 需要在图上留间隔的相邻端点最大距离
+    - visual_gap_length: float, 相邻端点各自裁短的显示长度，不改变输出数据
+    - show_all_raw_points: bool, 是否显示该切变类型的全部原始候选点
+    - raw_point_size: float, 原始点散点面积
     """
     lines = form_lines(points, interval_dis, length_min)
+    # 气象阈值先在完整候选线上判断，避免拆分后因局部平均值变化而丢失某一段。
+    parent_lines_attr = add_meteorological_attributes(lines, uwnd, vwnd)
+    parent_df = convert_to_dataframe(parent_lines_attr)
+    if parent_df.empty:
+        return []
+    parent_df = parent_df[
+        (parent_df['avg_vorticity'] > vorticity_threshold) &
+        (parent_df['avg_wind_speed'] > wind_speed_threshold)
+    ].reset_index(drop=True)
+    lines = list(parent_df['line'])
+
     lines = split_lines_by_max_length(lines, max_line_length)
     lines = split_lines_by_turn_angle(lines, max_turn_angle, turn_angle_window)
-    lines = [line for line in lines if line_length(line) > length_min]
+    if segment_length_min is None:
+        segment_length_min = length_min
+    if segment_length_min < 0:
+        raise ValueError('segment_length_min must be at least 0 or None')
+    lines = [
+        line for line in lines
+        if len(line) >= 2 and line_length(line) > segment_length_min
+    ]
     lines_attr = add_meteorological_attributes(lines, uwnd, vwnd)
     df_lines = convert_to_dataframe(lines_attr)
     if df_lines.empty:
         return []
 
     filtered_df = df_lines[
-        (df_lines['avg_vorticity'] > vorticity_threshold) &
-        (df_lines['avg_wind_speed'] > wind_speed_threshold) &
-        (df_lines['angle'] < angle_threshold)
+        df_lines['angle'].isna() | (df_lines['angle'] < angle_threshold)
     ].reset_index(drop=True)
 
     if smooth_method == 'bezier':
@@ -449,12 +539,29 @@ def process_and_plot_shear_lines(points, uwnd, vwnd, interval_dis, length_min, s
     else:
         smoothed_lines = smooth_lines(filtered_df['line'], smoothness=smoothness)
 
-    for line in smoothed_lines:
+    plot_lines = trim_nearby_line_endpoints(
+        smoothed_lines,
+        nearby_distance=visual_gap_distance,
+        trim_length=visual_gap_length,
+    )
+    if ax is not None and show_all_raw_points:
+        raw_points = np.asarray(points)
+        if raw_points.size:
+            ax.scatter(
+                raw_points[:, 1], raw_points[:, 0],
+                s=raw_point_size,
+                marker='.',
+                c=color,
+                linewidths=0,
+                alpha=0.7,
+                zorder=2,
+            )
+
+    for line_index, line in enumerate(plot_lines):
         line = np.array(line)
         if ax is not None:
-            ax.plot(line[:, 1], line[:, 0], marker='o', linewidth=linewidth,
-                    markersize=1, color=color,
-                    label=label if line is smoothed_lines[0] else '')
+            ax.plot(line[:, 1], line[:, 0], linewidth=linewidth, color=color,
+                    label=label if line_index == 0 else '', zorder=3)
 
     trough_lines = []
     for row_idx, (_, row) in enumerate(filtered_df.iterrows()):
@@ -566,6 +673,11 @@ def plot_trough_analysis(init_time=None, fc_hour=0, target_lev=500,
                 max_line_length=config.get('max_line_length'),
                 max_turn_angle=config.get('max_turn_angle'),
                 turn_angle_window=config.get('turn_angle_window', 1),
+                segment_length_min=config.get('segment_length_min'),
+                visual_gap_distance=config.get('visual_gap_distance'),
+                visual_gap_length=config.get('visual_gap_length', 0.0),
+                show_all_raw_points=config.get('show_all_raw_points', False),
+                raw_point_size=config.get('raw_point_size', 4.0),
             )
         )
 

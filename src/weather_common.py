@@ -295,7 +295,7 @@ def smooth_lines_bezier(lines, num_points=100, num_control_points=None):
     t_values = np.linspace(0, 1, num_points)
 
     for line in lines:
-        if len(line) > 2:
+        if len(line) >= 2:
             if num_control_points is not None and num_control_points < len(line):
                 control_point_count = max(2, num_control_points)
                 indices = np.linspace(0, len(line) - 1, control_point_count, dtype=int)
@@ -305,6 +305,6 @@ def smooth_lines_bezier(lines, num_points=100, num_control_points=None):
 
             smoothed_lines.append([bezier_curve(control_points, t) for t in t_values])
         else:
-            smoothed_lines.append(line)
+            smoothed_lines.append(np.asarray(line))
 
     return smoothed_lines
