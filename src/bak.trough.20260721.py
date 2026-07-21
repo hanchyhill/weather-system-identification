@@ -33,16 +33,8 @@ from weather_common import (
 )
 
 TROUGH_CONFIG = {
-    'interval_dis': 1.0,
-    'length_min': 4.0,
-    'segment_length_min': 3.5,
-    'max_line_length': 20.0,
-    'max_turn_angle': 120.0,
-    'turn_angle_window': 3,
-    'visual_gap_distance': 1.0,
-    'visual_gap_length': 0.3,
-    'show_all_raw_points': True,
-    'raw_point_size': 4.0,
+    'interval_dis': 2.0,
+    'length_min': 6,
     'smoothness': 6,
     'smooth_method': 'bezier',
     'num_points': 100,
