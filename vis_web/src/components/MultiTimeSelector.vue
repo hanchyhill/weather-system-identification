@@ -1,7 +1,7 @@
 <script setup>
 import { CalendarClock } from 'lucide-vue-next'
 import { NPopover } from 'naive-ui'
-import { computed, reactive } from 'vue'
+import { computed, reactive, ref } from 'vue'
 
 import { useWeatherViewContext } from '../context/weatherViewContext'
 
@@ -22,6 +22,9 @@ const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep
 const fcHoursNumeric = DEFAULT_FC_HOURS.map((value) => Number(value))
 
 const tableHighlight = reactive({ columnIndex: NaN, rowIndex: NaN })
+
+// 弹层显隐（受控）：选择完成后自动收起。
+const showPopover = ref(false)
 
 function pad2(value) {
   return String(value).padStart(2, '0')
@@ -173,6 +176,7 @@ function isActiveCell(cell) {
 function selectCell(cell) {
   if (!cell.isAvailable) return
   applyInitAndFcHour(formatInitTime(cell.initMs), String(cell.fc).padStart(3, '0'))
+  showPopover.value = false
 }
 
 function highlightCell(cell) {
@@ -188,7 +192,7 @@ function cancelHighlight() {
 </script>
 
 <template>
-  <n-popover trigger="hover" placement="right-start" style="max-width: 94vw;">
+  <n-popover v-model:show="showPopover" trigger="hover" placement="right-start" style="max-width: 94vw;">
     <template #trigger>
       <button type="button" class="mts-fab" aria-label="多时次选择器">
         <CalendarClock :size="20" />

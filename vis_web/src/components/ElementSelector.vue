@@ -45,6 +45,8 @@ const props = defineProps({
 })
 
 const showConfig = ref(false)
+// 弹层显隐（受控）：选择要素后自动收起。
+const showPopover = ref(false)
 
 const columns = computed(() => elementConfig.value.columns)
 const levels = computed(() => elementConfig.value.levels)
@@ -88,9 +90,10 @@ function pickSingle(groupKey, index, element) {
 function applySelection(element, elementKey) {
   if (props.selectionHandler) {
     props.selectionHandler(element, elementKey)
-    return
+  } else {
+    applyElementSelection(element, elementKey)
   }
-  applyElementSelection(element, elementKey)
+  showPopover.value = false
 }
 
 function layerTip(element) {
@@ -196,6 +199,7 @@ defineExpose({ openConfig })
 
 <template>
   <n-popover
+    v-model:show="showPopover"
     :trigger="headerTrigger ? 'click' : 'hover'"
     :placement="headerTrigger ? 'bottom-start' : 'right-start'"
     :show-arrow="false"

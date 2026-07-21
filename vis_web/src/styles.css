@@ -439,7 +439,7 @@ input {
 
 .drawing-toolbar-anchor {
   position: absolute;
-  top: 158px;
+  top: 206px;
   left: 14px;
   z-index: 5;
 }
@@ -453,7 +453,7 @@ input {
 
 .map-view-selector-anchor {
   position: absolute;
-  top: 206px;
+  top: 158px;
   left: 14px;
   z-index: 5;
 }

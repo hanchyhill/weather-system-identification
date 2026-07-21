@@ -110,36 +110,37 @@ function captureRegionView() {
       <div class="toolbar-actions">
         <n-popover
           v-if="!compact"
-          trigger="manual"
-          :show="showScreenshotMenu"
+          v-model:show="showScreenshotMenu"
+          trigger="hover"
           placement="bottom-end"
           :show-arrow="false"
-          @clickoutside="showScreenshotMenu = false"
         >
           <template #trigger>
-            <n-tooltip trigger="hover">
-              <template #trigger>
-                <n-button
-                  size="small"
-                  tertiary
-                  circle
-                  :type="screenshotSelecting ? 'primary' : 'default'"
-                  @click="showScreenshotMenu = !showScreenshotMenu"
-                >
-                  <Camera :size="16" />
-                </n-button>
-              </template>
-              截图
-            </n-tooltip>
+            <n-button
+              size="small"
+              tertiary
+              circle
+              :type="screenshotSelecting ? 'primary' : 'default'"
+              aria-label="截图"
+              @click="captureFullView"
+              @contextmenu.prevent="captureRegionView"
+            >
+              <Camera :size="16" />
+            </n-button>
           </template>
           <div class="screenshot-menu">
+            <div class="screenshot-menu-hint">
+              左键截取整个可视区域，右键框选指定区域
+            </div>
             <button type="button" class="screenshot-menu-item" @click="captureFullView">
               <Monitor :size="15" />
               <span>整个可视区域</span>
+              <kbd class="screenshot-menu-key">左键</kbd>
             </button>
             <button type="button" class="screenshot-menu-item" @click="captureRegionView">
               <Crop :size="15" />
               <span>框选指定区域</span>
+              <kbd class="screenshot-menu-key">右键</kbd>
             </button>
           </div>
         </n-popover>
@@ -279,7 +280,16 @@ function captureRegionView() {
 .screenshot-menu {
   display: grid;
   gap: 4px;
-  min-width: 168px;
+  min-width: 208px;
+}
+
+.screenshot-menu-hint {
+  padding: 2px 4px 6px;
+  color: #667487;
+  font-size: 11px;
+  line-height: 1.4;
+  border-bottom: 1px solid #eef2f6;
+  margin-bottom: 2px;
 }
 
 .screenshot-menu-item {
@@ -302,6 +312,17 @@ function captureRegionView() {
   border-color: #1f7a8c;
   background: rgba(31, 122, 140, 0.08);
   color: #16414a;
+}
+
+.screenshot-menu-key {
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 11px;
+  font-family: inherit;
 }
 
 .screenshot-overlay {
