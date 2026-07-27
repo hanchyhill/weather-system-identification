@@ -18,7 +18,13 @@ from draw.svg_layer_data import (  # noqa: E402
     accumulation_start_hour,
 )
 from draw.svg_layer_geometry import Bounds  # noqa: E402
-from draw.svg_layer_rendering import preprocess_surface_layer  # noqa: E402
+from draw.svg_layer_rendering import (  # noqa: E402
+    BOUND_VORT,
+    CLRMAP_VORT,
+    COLOR_ARR_VORT,
+    COLOR_ARR_VORT_LOW,
+    preprocess_surface_layer,
+)
 from draw.svg_layer_workflow import generate_surface_layers  # noqa: E402
 
 
@@ -98,6 +104,14 @@ class GenerateSvgLayersTests(unittest.TestCase):
         )
 
         self.assertIs(result["precipitation"], precipitation)
+
+    def test_vorticity_fill_uses_four_low_value_blue_bins_then_original_scale(self):
+        self.assertEqual(len(BOUND_VORT) - 1, len(COLOR_ARR_VORT))
+        np.testing.assert_allclose(BOUND_VORT[:5], [0.05, 0.075, 0.1, 0.125, 0.15])
+        np.testing.assert_allclose(np.diff(BOUND_VORT[4:]), 0.01)
+        self.assertAlmostEqual(float(BOUND_VORT[-1]), 1.0)
+        self.assertEqual(COLOR_ARR_VORT[:4], COLOR_ARR_VORT_LOW)
+        self.assertEqual(tuple(CLRMAP_VORT.get_under()), (1.0, 1.0, 1.0, 0.0))
 
     @patch("draw.svg_layer_workflow._generate_layers", return_value=[])
     def test_surface_precipitation_layers_follow_available_forecast_intervals(self, generate_mock):

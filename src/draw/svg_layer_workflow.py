@@ -36,12 +36,11 @@ from draw.svg_layer_rendering import (
 )
 
 
-HIGH_LAYER_TYPES = ("hght_contour", "wind_quiver", "wind_barb", "wind_speed_fill", "wind_streamline", "temp_contour", "vort_fill", "rhum_fill")
+# 暂时只输出风向杆：保留箭头和流线图的渲染实现，恢复时将它们重新加入列表即可。
+HIGH_LAYER_TYPES = ("hght_contour", "wind_barb", "wind_speed_fill", "temp_contour", "vort_fill", "rhum_fill")
 SURFACE_LAYER_TYPES = (
-    "surface_quiver",
     "surface_barb",
     "surface_speed_fill",
-    "surface_streamline",
     "mslp_contour",
     "rain_24h_fill",
     "rain_6h_fill",
