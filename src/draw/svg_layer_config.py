@@ -148,6 +148,15 @@ LAYER_STYLES = {
         "contour_color": "black",
         "contour_linewidth": 0.75,
     },
+    "rain_24h_fill": {
+        "extend": "max",
+    },
+    "rain_6h_fill": {
+        "extend": "max",
+    },
+    "rain_3h_fill": {
+        "extend": "max",
+    },
 }
 
 

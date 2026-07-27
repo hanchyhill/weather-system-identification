@@ -20,7 +20,10 @@ export const LAYER_TYPE_OPTIONS = [
   { label: '地面风矢量', value: 'surface_quiver' },
   { label: '地面风羽', value: 'surface_barb' },
   { label: '地面风速填色', value: 'surface_speed_fill' },
-  { label: '地面流线', value: 'surface_streamline' }
+  { label: '地面流线', value: 'surface_streamline' },
+  { label: '24小时累计降水', value: 'rain_24h_fill' },
+  { label: '6小时累计降水', value: 'rain_6h_fill' },
+  { label: '3小时累计降水', value: 'rain_3h_fill' }
 ]
 
 // 高空要素表的列定义（与 OceanTyphoon 表头一致，颜色沿用其 tailwind 底色）。
@@ -112,7 +115,16 @@ export const DEFAULT_SINGLE_LAYER_GROUPS = [
       { label: '10m风速填色', level: 'surface', layers: ['surface_speed_fill'] }
     ]
   },
-  { key: 'precip', title: '降水', color: '#86efac', elements: [] },
+  {
+    key: 'precip',
+    title: '降水',
+    color: '#86efac',
+    elements: [
+      { label: '24小时累计降水', level: 'surface', layers: ['rain_24h_fill'] },
+      { label: '6小时累计降水', level: 'surface', layers: ['rain_6h_fill'] },
+      { label: '3小时累计降水', level: 'surface', layers: ['rain_3h_fill'] }
+    ]
+  },
   { key: 'severe', title: '强天气', color: '#86efac', elements: [] },
   { key: 'temperature', title: '温度', color: '#fca5a5', elements: [] },
   { key: 'humidity', title: '湿度', color: '#a7f3d0', elements: [] },

@@ -36,7 +36,15 @@ export const LAYER_COMBINATION_STORAGE_KEY = 'weather-view-layer-combinations'
 export const MULTI_ELEMENT_CONFIGURATION_STORAGE_KEY = 'weather-view-multi-element-configurations'
 export const MULTI_ELEMENT_FORECAST_CONFIGURATION_STORAGE_KEY = 'weather-view-multi-element-forecast-configurations'
 export const MAP_VIEW_STORAGE_KEY = 'weather-view-saved-map-views'
-export const FILL_LAYER_TYPES = new Set(['wind_speed_fill', 'vort_fill', 'rhum_fill', 'surface_speed_fill'])
+export const FILL_LAYER_TYPES = new Set([
+  'wind_speed_fill',
+  'vort_fill',
+  'rhum_fill',
+  'surface_speed_fill',
+  'rain_24h_fill',
+  'rain_6h_fill',
+  'rain_3h_fill'
+])
 export const WIND_OVERLAY_LAYER_TYPES = new Set([
   'wind_quiver',
   'wind_barb',
@@ -147,7 +155,10 @@ export const fallbackLayerOptions = [
   { label: '地面风羽', value: 'surface_barb' },
   { label: '地面风速填色', value: 'surface_speed_fill' },
   { label: '地面流线', value: 'surface_streamline' },
-  { label: '海平面气压等值线', value: 'mslp_contour' }
+  { label: '海平面气压等值线', value: 'mslp_contour' },
+  { label: '24小时累计降水', value: 'rain_24h_fill' },
+  { label: '6小时累计降水', value: 'rain_6h_fill' },
+  { label: '3小时累计降水', value: 'rain_3h_fill' }
 ]
 
 export const multiMapModeOptions = [
