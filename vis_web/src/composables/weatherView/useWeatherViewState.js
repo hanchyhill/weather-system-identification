@@ -106,6 +106,9 @@ export function createWeatherViewStore(initialView = {}) {
   const elementConfig = ref(loadElementConfig())
   const activeElementKey = ref('')
   const multiMapMode = ref(null)
+  // 多图所有子图共用的视角/光标同步状态。进入多图时由单图视角初始化，
+  // 在多图模式之间切换时则保留第一张子图当前的视角。
+  const multiMapSyncState = reactive({ cursor: null, zoom: null })
   // 左侧「天气系统识别」控制面板的显隐（由地图上的按钮 toggle）
   const showControlRail = ref(true)
   const multiMapPanels = ref([])
@@ -580,6 +583,7 @@ export function createWeatherViewStore(initialView = {}) {
     elementConfig,
     activeElementKey,
     multiMapMode,
+    multiMapSyncState,
     showControlRail,
     multiMapPanels,
     multiInitInterval,

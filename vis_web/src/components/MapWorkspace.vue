@@ -1,11 +1,14 @@
 <script setup>
-import { Camera, Crop, Monitor, PanelLeftClose, PanelLeftOpen, RotateCcw } from 'lucide-vue-next'
+import {
+  Camera, ChevronLeft, ChevronRight, Crop, Monitor, PanelLeftClose, PanelLeftOpen, RefreshCw, RotateCcw
+} from 'lucide-vue-next'
 import {
   NButton,
+  NInput,
   NPopover,
   NTooltip
 } from 'naive-ui'
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 
 import { useScreenshot } from '../composables/useScreenshot'
 import { useWeatherViewContext } from '../context/weatherViewContext'
@@ -36,6 +39,7 @@ const props = defineProps({
 const viewContext = props.viewContext || useWeatherViewContext()
 
 const {
+  applyInitTime,
   canvasRef,
   drawMode,
   fcHour,
@@ -56,12 +60,24 @@ const {
   level,
   mouseGeo,
   preloading,
+  refreshToLatest,
   resetView,
   selectedLayerTypes,
   shellRef,
   showControlRail,
+  shiftInitTime,
   zoomTransform
 } = viewContext
+
+const initTimeInput = ref(initTime.value)
+
+watch(initTime, (value) => {
+  initTimeInput.value = value
+})
+
+function applyInitTimeInput() {
+  if (!applyInitTime(initTimeInput.value)) initTimeInput.value = initTime.value
+}
 
 // 截图工具：范围/剪贴板/下载逻辑封装在 useScreenshot 中，按面板独立运行。
 const showScreenshotMenu = ref(false)
@@ -97,16 +113,45 @@ function captureRegionView() {
 <template>
   <section class="map-workspace" :class="{ 'map-workspace-compact': compact }">
     <div class="toolbar">
-      <div>
-        <template v-if="compact">
-          <strong v-if="showPanelTitle && panelTitle" class="panel-title" :title="panelTitle">{{ panelTitle }}</strong>
-          <span>+{{ fcHour }} h</span>
-          <strong>{{ forecastValidTimeBjtLabel }}</strong>
-        </template>
-        <template v-else>
-          <strong>{{ initTime }}</strong>
-          <span>+{{ fcHour }} h</span>
-        </template>
+      <div v-if="compact">
+        <strong v-if="showPanelTitle && panelTitle" class="panel-title" :title="panelTitle">{{ panelTitle }}</strong>
+        <span>+{{ fcHour }} h</span>
+        <strong>{{ forecastValidTimeBjtLabel }}</strong>
+        <span>{{ level === 'surface' ? '地面' : `${level} hPa` }}</span>
+      </div>
+      <div v-else class="init-time-control">
+        <n-input
+          v-model:value="initTimeInput"
+          size="small"
+          aria-label="起报时次"
+          @blur="applyInitTimeInput"
+          @keyup.enter="applyInitTimeInput"
+        />
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button size="small" tertiary circle @click="shiftInitTime(-12)">
+              <ChevronLeft :size="16" />
+            </n-button>
+          </template>
+          上一个起报时次（-12h）
+        </n-tooltip>
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button size="small" tertiary circle @click="shiftInitTime(12)">
+              <ChevronRight :size="16" />
+            </n-button>
+          </template>
+          下一个起报时次（+12h）
+        </n-tooltip>
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button size="small" tertiary circle @click="refreshToLatest">
+              <RefreshCw :size="16" />
+            </n-button>
+          </template>
+          对齐到最新起报时次并重新加载
+        </n-tooltip>
+        <span>+{{ fcHour }} h</span>
         <span>{{ level === 'surface' ? '地面' : `${level} hPa` }}</span>
       </div>
       <div class="toolbar-actions">
@@ -278,6 +323,12 @@ function captureRegionView() {
 </template>
 
 <style scoped>
+.toolbar > .init-time-control {
+  align-items: center;
+  gap: 6px;
+  overflow: visible;
+}
+
 .toolbar-actions {
   display: flex;
   align-items: center;

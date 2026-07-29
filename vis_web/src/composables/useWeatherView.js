@@ -22,7 +22,7 @@ import {
   formatNumber,
   normalizeFcHour,
   parseInitTime,
-  padTimePart,
+  formatInitTime,
   getTileZoom,
   renderScaleForZoom
 } from './weatherView/helpers'
@@ -55,6 +55,7 @@ export function useWeatherView(initialView = {}) {
     selectedLayerTypes,
     projectionName,
     multiMapMode,
+    multiMapSyncState,
     multiInitInterval,
     multiInitPanelCount,
     multiForecastInterval,
@@ -95,6 +96,8 @@ export function useWeatherView(initialView = {}) {
   } = store
 
   const projection = useMapProjection(store)
+  // 多图描述符在切换模式时需要读取单图当前视角；挂到 store 可避免模块间构造顺序耦合。
+  store.currentMapViewSnapshot = projection.currentMapViewSnapshot
   const data = useWeatherData(store)
   const renderer = useMapRenderer(store)
   const drawings = useMapDrawings(store)
@@ -113,24 +116,36 @@ export function useWeatherView(initialView = {}) {
   const { handleDrawKeydown } = drawings
   const { openMultiMap } = multiMap
 
+  // 切换起报时次时优先保持有效时间不变。新起报缺少对应时效时，保留原预报时效。
+  function applyInitTime(nextInitTime) {
+    const next = String(nextInitTime || '').trim()
+    const currentDate = parseInitTime(initTime.value)
+    const nextDate = parseInitTime(next)
+    if (!currentDate || !nextDate) return false
+
+    const currentFcHour = normalizeFcHour(fcHour.value)
+    const targetFcHour = Number(currentFcHour) - ((nextDate.getTime() - currentDate.getTime()) / (60 * 60 * 1000))
+    const preferredFcHour = Number.isFinite(targetFcHour) && targetFcHour >= 0
+      ? normalizeFcHour(targetFcHour)
+      : null
+
+    initTime.value = next
+    loadManifest({ preferredFcHour, fallbackFcHour: currentFcHour })
+    return true
+  }
+
   // —— 起报时次导航（需触发 loadManifest）——
   function shiftInitTime(deltaHours) {
     const date = parseInitTime(initTime.value)
     if (!date) return
 
     const next = new Date(date.getTime() + deltaHours * 60 * 60 * 1000)
-    const year = next.getUTCFullYear()
-    const month = padTimePart(next.getUTCMonth() + 1)
-    const day = padTimePart(next.getUTCDate())
-    const hour = padTimePart(next.getUTCHours())
-    initTime.value = `${year}${month}${day}${hour}`
-    loadManifest()
+    applyInitTime(formatInitTime(next))
   }
 
   // 点击“刷新”时重新对齐到最新起报时次（含后端绘图滞后一小时的补偿），再重新加载。
   function refreshToLatest() {
-    initTime.value = calLatestBaseTime()
-    loadManifest()
+    applyInitTime(calLatestBaseTime())
   }
 
   // 多时次选择器：同时指定起报时次与预报时效并重新加载。
@@ -329,6 +344,7 @@ export function useWeatherView(initialView = {}) {
   const context = {
     activeSystemTab: store.activeSystemTab,
     applyInitAndFcHour,
+    applyInitTime,
     applyMapView: projection.applyMapView,
     DEFAULT_FC_HOURS,
     canvasRef,
@@ -405,6 +421,7 @@ export function useWeatherView(initialView = {}) {
     loadingState: store.loadingState,
     showControlRail,
     multiMapMode,
+    multiMapSyncState,
     multiMapModeOptions,
     multiMapPanels: store.multiMapPanels,
     multiInitInterval,

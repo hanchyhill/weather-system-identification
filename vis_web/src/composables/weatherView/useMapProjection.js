@@ -62,9 +62,9 @@ export function useMapProjection(store) {
     return { center: [center[0], center[1]], k }
   }
 
-  function saveMapView(name) {
+  function saveMapView(name, snapshotOverride = null) {
     const label = String(name || '').trim()
-    const snapshot = currentMapViewSnapshot()
+    const snapshot = snapshotOverride || currentMapViewSnapshot()
     if (!label || !snapshot) return false
 
     const record = { name: label, ...snapshot }

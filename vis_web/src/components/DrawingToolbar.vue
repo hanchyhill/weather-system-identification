@@ -5,6 +5,15 @@ import { computed, ref } from 'vue'
 
 import { useWeatherViewContext } from '../context/weatherViewContext'
 
+const props = defineProps({
+  viewContext: {
+    type: Object,
+    default: null
+  }
+})
+
+const viewContext = props.viewContext || useWeatherViewContext()
+
 const {
   DRAW_TOOLS,
   drawMode,
@@ -16,7 +25,7 @@ const {
   clearDrawings,
   hasDrawings,
   draftPointCount
-} = useWeatherViewContext()
+} = viewContext
 
 const show = ref(false)
 

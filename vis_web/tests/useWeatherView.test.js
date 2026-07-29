@@ -51,6 +51,10 @@ const mockSources = {
   './weatherView/helpers': `
     export function formatNumber(value) { return String(value) }
     export function normalizeFcHour(value) { return String(Number(value)).padStart(3, '0') }
+    export function formatInitTime(date) {
+      const pad = (value) => String(value).padStart(2, '0')
+      return String(date.getUTCFullYear()) + pad(date.getUTCMonth() + 1) + pad(date.getUTCDate()) + pad(date.getUTCHours())
+    }
     export function parseInitTime(value) {
       const match = String(value || '').match(/^(\\d{4})(\\d{2})(\\d{2})(\\d{2})$/)
       if (!match) return null
@@ -272,7 +276,18 @@ describe('useWeatherView composition root', () => {
 
     view.shiftInitTime(12)
     assert.equal(view.initTime.value, '2026070500')
-    assert.deepEqual(harness.calls.filter(([name]) => name === 'loadManifest'), [['loadManifest']])
+    assert.deepEqual(harness.calls.filter(([name]) => name === 'loadManifest'), [[
+      'loadManifest', { preferredFcHour: null, fallbackFcHour: '000' }
+    ]])
+
+    view.initTime.value = '2026072812'
+    view.fcHour.value = '072'
+    view.applyInitTime('2026072800')
+    assert.equal(view.initTime.value, '2026072800')
+    assert.equal(view.fcHour.value, '072')
+    assert.deepEqual(harness.calls.at(-1), [
+      'loadManifest', { preferredFcHour: '084', fallbackFcHour: '072' }
+    ])
 
     view.applyInitAndFcHour('2026070312', 6)
     assert.equal(view.initTime.value, '2026070312')

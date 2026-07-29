@@ -9,16 +9,20 @@ const props = defineProps({
   active: Boolean
 })
 
-const emit = defineEmits(['activate'])
+const emit = defineEmits(['activate', 'ready'])
 
 function activate() {
   emit('activate')
+}
+
+function ready(viewContext) {
+  emit('ready', viewContext)
 }
 </script>
 
 <template>
   <div class="multi-map-panel" :class="{ 'multi-map-panel-active': active }" @pointerdown="activate">
-    <MultiMapValidPanel v-if="panel.valid" :panel="panel" />
+    <MultiMapValidPanel v-if="panel.valid" :panel="panel" @ready="ready" />
     <article v-else class="multi-map-invalid-panel">
       <header>
         <strong>{{ panel.title }}</strong>

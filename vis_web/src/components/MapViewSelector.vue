@@ -5,6 +5,17 @@ import { ref } from 'vue'
 
 import { useWeatherViewContext } from '../context/weatherViewContext'
 
+const props = defineProps({
+  applyView: {
+    type: Function,
+    default: null
+  },
+  saveView: {
+    type: Function,
+    default: null
+  }
+})
+
 const {
   applyMapView,
   deleteMapView,
@@ -22,8 +33,13 @@ function openSaveDialog() {
 }
 
 function confirmSave() {
-  if (!saveMapView(viewNameDraft.value)) return
+  if (!(props.saveView || saveMapView)(viewNameDraft.value)) return
   showSaveDialog.value = false
+}
+
+function applySelectedView(view) {
+  const apply = props.applyView || applyMapView
+  apply(view)
 }
 
 function formatCoordinate(value) {
@@ -52,7 +68,7 @@ function formatCoordinate(value) {
 
       <div v-if="savedMapViews.length" class="map-view-list">
         <div v-for="view in savedMapViews" :key="view.name" class="map-view-item">
-          <button type="button" class="map-view-apply" @click="applyMapView(view)">
+          <button type="button" class="map-view-apply" @click="applySelectedView(view)">
             <strong>{{ view.name }}</strong>
             <span>中心 {{ formatCoordinate(view.center[0]) }}E，{{ formatCoordinate(view.center[1]) }}N · {{ view.k.toFixed(2) }}×</span>
           </button>

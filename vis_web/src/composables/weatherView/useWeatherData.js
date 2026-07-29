@@ -111,7 +111,7 @@ export function useWeatherData(store) {
     }
   }
 
-  async function loadManifest() {
+  async function loadManifest({ preferredFcHour = null, fallbackFcHour = null } = {}) {
     errorMessage.value = ''
     manifest.value = null
     activeSvgLayers.value = []
@@ -130,8 +130,14 @@ export function useWeatherData(store) {
         layerType.value = layerOptions.value[0]?.value || layerType.value
       }
       setSelectedLayerTypes(selectedLayerTypes.value)
-      if (sliderFcHours.value.length && !sliderFcHours.value.includes(fcHour.value)) {
-        fcHour.value = firstAvailableFcHour.value
+      if (sliderFcHours.value.length) {
+        if (preferredFcHour && sliderFcHours.value.includes(preferredFcHour)) {
+          fcHour.value = preferredFcHour
+        } else if (fallbackFcHour && sliderFcHours.value.includes(fallbackFcHour)) {
+          fcHour.value = fallbackFcHour
+        } else if (!sliderFcHours.value.includes(fcHour.value)) {
+          fcHour.value = firstAvailableFcHour.value
+        }
       }
     } catch (error) {
       loadingState.manifest = '未找到'
@@ -366,6 +372,12 @@ export function useWeatherData(store) {
           await cacheSvgSource(url, PRIORITY.LOW, signal, preloadScheduling)
         }))
       }
+    } catch (error) {
+      // 预加载是后台优化任务；时效、图层或缩放变化时主动 abort 属于正常控制流。
+      // 这里必须消费该拒绝，否则定时器启动的 async 任务会在控制台留下未捕获 Promise。
+      if (!signal.aborted && error?.name !== 'AbortError') {
+        console.warn('相邻预报时效预加载失败', error)
+      }
     } finally {
       // 仅当自己仍是最新的预加载任务时才关闭标识，避免被后启动的任务提前清除。
       if (runId === runtime.preloadRunId) {
@@ -393,7 +405,7 @@ export function useWeatherData(store) {
     cancelPreload()
     runtime.preloadTimer = setTimeout(() => {
       runtime.preloadTimer = null
-      preloadNeighborForecasts()
+      void preloadNeighborForecasts()
     }, 400)
   }
 

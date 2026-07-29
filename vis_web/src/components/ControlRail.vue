@@ -1,10 +1,9 @@
 <script setup>
-import { ChevronLeft, ChevronRight, RefreshCw, Save, Settings, Trash2 } from 'lucide-vue-next'
+import { Save, Settings, Trash2 } from 'lucide-vue-next'
 import {
   NButton,
   NCheckbox,
   NCheckboxGroup,
-  NInput,
   NInputNumber,
   NPopover,
   NSelect,
@@ -52,7 +51,6 @@ const {
   fcHour,
   fcHourOptions,
   handleLayerTypeChange,
-  initTime,
   isVortexTrackLevel,
   jetLineWidth,
   jetMinAvgWindSpeed,
@@ -66,10 +64,8 @@ const {
   level,
   levelOptions,
   loadingState,
-  refreshToLatest,
   saveLayerCombination,
   savedLayerCombinations,
-  shiftInitTime,
   selectedLayerLabels,
   selectedLayerTypes,
   SHEAR_COLORS,
@@ -115,37 +111,6 @@ const {
       </div>
       <p>SVG 图层与天气系统交互查看</p>
     </div>
-
-    <section class="control-section">
-      <label>起报时次</label>
-      <div class="init-time-control">
-        <n-input v-model:value="initTime" size="small" />
-        <n-tooltip trigger="hover">
-          <template #trigger>
-            <n-button size="small" secondary circle @click="shiftInitTime(-12)">
-              <ChevronLeft :size="16" />
-            </n-button>
-          </template>
-          上一个起报时次（-12h）
-        </n-tooltip>
-        <n-tooltip trigger="hover">
-          <template #trigger>
-            <n-button size="small" secondary circle @click="shiftInitTime(12)">
-              <ChevronRight :size="16" />
-            </n-button>
-          </template>
-          下一个起报时次（+12h）
-        </n-tooltip>
-        <n-tooltip trigger="hover">
-          <template #trigger>
-            <n-button size="small" secondary circle @click="refreshToLatest">
-              <RefreshCw :size="16" />
-            </n-button>
-          </template>
-          对齐到最新起报时次并重新加载
-        </n-tooltip>
-      </div>
-    </section>
 
     <section class="control-section two-column">
       <div>

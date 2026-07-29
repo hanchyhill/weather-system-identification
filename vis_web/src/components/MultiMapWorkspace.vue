@@ -1,18 +1,23 @@
 <script setup>
 import { Camera, ChevronLeft, ChevronRight, Pencil, Plus, Save, Settings, Trash2, X } from 'lucide-vue-next'
 import { NButton, NButtonGroup, NInput, NModal, NPopover, NSelect, NTooltip } from 'naive-ui'
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import { useScreenshot } from '../composables/useScreenshot'
 import { useWeatherViewContext } from '../context/weatherViewContext'
 import { MAX_CONCURRENT } from '../utils/loadQueue'
 import ElementSelector from './ElementSelector.vue'
 import ForecastSlider from './ForecastSlider.vue'
+import DrawingToolbar from './DrawingToolbar.vue'
+import MapViewSelector from './MapViewSelector.vue'
 import MultiMapPanel from './MultiMapPanel.vue'
+import MultiMapSelector from './MultiMapSelector.vue'
+import MultiTimeSelector from './MultiTimeSelector.vue'
 
 const {
   canShiftMultiForecastBackward,
   canShiftMultiForecastForward,
+  applyMapView,
   closeMultiMap,
   activeMultiElementConfigurationName,
   applyMultiElementConfiguration,
@@ -20,6 +25,7 @@ const {
   deleteMultiElementConfiguration,
   activeMultiElementForecastConfigurationName,
   applyMultiElementForecastConfiguration,
+  applyElementSelection,
   createMultiElementForecastConfiguration,
   deleteMultiElementForecastConfiguration,
   multiInitInterval,
@@ -29,6 +35,7 @@ const {
   multiMapMode,
   multiMapModeOptions,
   multiMapPanels,
+  multiMapSyncState,
   multiForecastInterval,
   multiForecastIntervalOptions,
   multiForecastPanelCount,
@@ -44,6 +51,7 @@ const {
   renameMultiElementForecastConfiguration,
   saveMultiElementConfiguration,
   saveMultiElementForecastConfiguration,
+  saveMapView,
   setMultiInitInterval,
   setMultiInitPanelCount,
   setMultiElementConfigurationName,
@@ -53,7 +61,10 @@ const {
   setMultiForecastPanelCount,
   shiftMultiForecastPage,
   updateMultiElementPanel,
-  updateMultiElementForecastPanel
+  updateMultiElementForecastPanel,
+  level,
+  selectedLayerTypes,
+  activeElementKey: globalActiveElementKey
 } = useWeatherViewContext()
 
 const modeLabel = computed(() => (
@@ -77,7 +88,7 @@ const showDeleteConfigurationDialog = ref(false)
 const configurationNameDraft = ref('')
 const configurationPendingDeletion = ref(null)
 const activeElementKey = computed(() => (
-  multiMapPanels.value[activeElementPanelIndex.value]?.elementKey || ''
+  multiMapPanels.value[activeElementPanelIndex.value]?.elementKey || globalActiveElementKey.value
 ))
 const activeConfigurationName = computed(() => (
   isElementGridMode.value
@@ -131,10 +142,10 @@ const panelLoadConcurrency = computed(() => (
   Math.max(1, Math.floor(MAX_CONCURRENT / Math.max(1, multiMapPanels.value.length)))
 ))
 
-const syncState = reactive({
-  cursor: null,
-  zoom: null
-})
+// 所有子图使用同一同步对象；它在进入多图时继承单图视角，并在模式切换时保持第一张图的视角。
+const syncState = multiMapSyncState
+const panelViewContexts = new Map()
+const activePanelViewContext = ref(null)
 
 // 多图截图：分别读取各子图 canvas，按屏幕上的网格布局合成到一张大图，
 // 并将各子图的标题文字额外绘制到对应表头区域（避免 canvas 与 DOM 混合栅格化的复杂性）。
@@ -260,12 +271,15 @@ function resetSyncState() {
 }
 
 function close() {
+  const snapshot = syncState.zoom ? { ...syncState.zoom } : null
+  if (snapshot) applyMapView(snapshot)
   resetSyncState()
   closeMultiMap()
 }
 
 function activateElementPanel(index) {
-  if (isElementEditableMode.value) activeElementPanelIndex.value = index
+  activeElementPanelIndex.value = index
+  activePanelViewContext.value = panelViewContexts.get(index) || null
 }
 
 function activateElementSetting(index) {
@@ -277,13 +291,46 @@ function applyElementToActivePanel(element, elementKey) {
     updateMultiElementPanel(activeElementPanelIndex.value, element, elementKey)
   } else if (isElementGridMode.value) {
     updateMultiElementForecastPanel(activeElementPanelIndex.value, element, elementKey)
+  } else {
+    // 纯起报/时效对比的横轴或纵轴不包含天气要素，统一切换整组图层，
+    // 才能维持各子图之间的同要素可比性。
+    applyElementSelection(element, elementKey)
   }
+  if (isElementEditableMode.value && activeElementPanelIndex.value === 0) syncFirstPanelTimeBase()
+}
+
+// 多时次选择器的数据可用性和切换目标都以第一张图为准。多要素模式修改第一张图后，
+// 同步全局基准，保证选择器立即使用该要素对应的可用时效。
+function syncFirstPanelTimeBase() {
+  const firstPanel = multiMapPanels.value[0]
+  if (!firstPanel) return
+  if (firstPanel.initTime) initTime.value = firstPanel.initTime
+  if (firstPanel.fcHour) fcHour.value = firstPanel.fcHour
+  if (firstPanel.level) level.value = String(firstPanel.level)
+  if (Array.isArray(firstPanel.selectedLayerTypes) && firstPanel.selectedLayerTypes.length) {
+    selectedLayerTypes.value = [...firstPanel.selectedLayerTypes]
+  }
+}
+
+function registerPanelViewContext(index, viewContext) {
+  panelViewContexts.set(index, viewContext)
+  if (index === activeElementPanelIndex.value) activePanelViewContext.value = viewContext
+}
+
+function applyMultiMapView(view) {
+  syncState.zoom = { ...view, source: 'multi-map-view-selector' }
+}
+
+function saveMultiMapView(name) {
+  if (!syncState.zoom) return false
+  return saveMapView(name, syncState.zoom)
 }
 
 function selectMultiElementConfiguration(configuration) {
   if (isElementGridMode.value) applyMultiElementForecastConfiguration(configuration)
   else applyMultiElementConfiguration(configuration)
   activeElementPanelIndex.value = 0
+  syncFirstPanelTimeBase()
 }
 
 function selectMultiElementConfigurationByName(name) {
@@ -336,13 +383,14 @@ function confirmDeleteMultiElementConfiguration() {
 }
 
 watch(multiMapMode, (mode) => {
-  if (mode) {
-    resetSyncState()
-    activeElementPanelIndex.value = 0
-  }
+  if (!mode) resetSyncState()
+  activeElementPanelIndex.value = 0
+  activePanelViewContext.value = null
 })
 
 watch(multiMapPanels, (panels) => {
+  panelViewContexts.clear()
+  activePanelViewContext.value = null
   if (activeElementPanelIndex.value >= panels.length) {
     activeElementPanelIndex.value = Math.max(0, panels.length - 1)
   }
@@ -423,11 +471,6 @@ watch(multiMapPanels, (panels) => {
               </n-button>
             </div>
           </n-popover>
-          <ElementSelector
-            header-trigger
-            :active-element-key="activeElementKey"
-            :selection-handler="applyElementToActivePanel"
-          />
         </div>
         <div v-if="isForecastMode || isElementForecastMode || isInitForecastMode" class="multi-forecast-controls">
           <n-button-group v-if="isForecastMode || isInitForecastMode" size="small">
@@ -653,13 +696,25 @@ watch(multiMapPanels, (panels) => {
       </template>
     </n-modal>
 
+    <aside class="multi-map-floating-controls" aria-label="地图工具">
+      <MultiTimeSelector />
+      <ElementSelector
+        :active-element-key="activeElementKey"
+        :selection-handler="applyElementToActivePanel"
+      />
+      <MultiMapSelector />
+      <MapViewSelector :apply-view="applyMultiMapView" :save-view="saveMultiMapView" />
+      <DrawingToolbar v-if="activePanelViewContext" :view-context="activePanelViewContext" />
+    </aside>
+
     <div ref="gridRef" class="multi-map-grid" :style="gridStyle">
       <MultiMapPanel
         v-for="(panel, index) in multiMapPanels"
         :key="`${panel.id}-load-${panelLoadConcurrency}`"
         :panel="{ ...panel, syncId: panel.id, syncState, maxLoadConcurrent: panelLoadConcurrency }"
-        :active="isElementEditableMode && activeElementPanelIndex === index"
+        :active="activeElementPanelIndex === index"
         @activate="activateElementPanel(index)"
+        @ready="registerPanelViewContext(index, $event)"
       />
     </div>
 

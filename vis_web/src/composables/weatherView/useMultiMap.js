@@ -27,6 +27,7 @@ export function useMultiMap(store) {
     activeElementKey,
     elementConfig,
     multiMapMode,
+    multiMapSyncState,
     multiMapPanels,
     multiInitInterval,
     multiInitPanelCount,
@@ -54,6 +55,31 @@ export function useMultiMap(store) {
       showPanelTitle: true,
       valid: true,
       ...overrides
+    }
+  }
+
+  // 每次切到另一种多图模式时，都以当前第一张子图作为数据基准。
+  // 这也覆盖多要素场景：第一张图的要素/层次会成为新模式的起点。
+  function adoptFirstPanelAsBase() {
+    const firstPanel = multiMapPanels.value[0]
+    if (!firstPanel) return
+
+    if (firstPanel.initTime) initTime.value = firstPanel.initTime
+    if (firstPanel.fcHour) fcHour.value = normalizeFcHour(firstPanel.fcHour)
+    if (firstPanel.level) level.value = String(firstPanel.level)
+    if (Array.isArray(firstPanel.selectedLayerTypes) && firstPanel.selectedLayerTypes.length) {
+      selectedLayerTypes.value = [...firstPanel.selectedLayerTypes]
+    }
+    if (firstPanel.projectionName) projectionName.value = firstPanel.projectionName
+  }
+
+  function initializeMultiMapView(isModeChange) {
+    if (!isModeChange) return
+    if (multiMapMode.value && multiMapPanels.value.length) adoptFirstPanelAsBase()
+
+    const snapshot = multiMapSyncState.zoom || store.currentMapViewSnapshot?.()
+    if (snapshot) {
+      multiMapSyncState.zoom = { ...snapshot, source: 'multi-map-base' }
     }
   }
 
@@ -579,6 +605,7 @@ export function useMultiMap(store) {
   function openMultiMap(mode) {
     if (!multiMapModeOptions.some((option) => option.value === mode)) return
     const isModeChange = multiMapMode.value !== mode
+    initializeMultiMapView(isModeChange)
 
     // 该矩阵模式默认以 4 个起报行和 4 个预报时效列打开；
     // 同一模式内修改控制项时不会触发重置。
