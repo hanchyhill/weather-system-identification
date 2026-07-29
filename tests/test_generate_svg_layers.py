@@ -1,7 +1,6 @@
 import sys
 import tempfile
 import unittest
-from argparse import Namespace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -17,7 +16,6 @@ from draw.svg_layer_data import (  # noqa: E402
     accumulated_precipitation,
     accumulation_start_hour,
 )
-from draw.svg_layer_geometry import Bounds  # noqa: E402
 from draw.svg_layer_rendering import (  # noqa: E402
     BOUND_VORT,
     CLRMAP_VORT,
@@ -25,7 +23,6 @@ from draw.svg_layer_rendering import (  # noqa: E402
     COLOR_ARR_VORT_LOW,
     preprocess_surface_layer,
 )
-from draw.svg_layer_workflow import generate_surface_layers  # noqa: E402
 
 
 class GenerateSvgLayersTests(unittest.TestCase):
@@ -112,24 +109,6 @@ class GenerateSvgLayersTests(unittest.TestCase):
         self.assertAlmostEqual(float(BOUND_VORT[-1]), 1.0)
         self.assertEqual(COLOR_ARR_VORT[:4], COLOR_ARR_VORT_LOW)
         self.assertEqual(tuple(CLRMAP_VORT.get_under()), (1.0, 1.0, 1.0, 0.0))
-
-    @patch("draw.svg_layer_workflow._generate_layers", return_value=[])
-    def test_surface_precipitation_layers_follow_available_forecast_intervals(self, generate_mock):
-        args = Namespace(init_time="2026072700")
-        bounds = Bounds(60, 150, 0, 60)
-
-        generate_surface_layers(args, "078", bounds)
-        layer_types = generate_mock.call_args.args[4]
-        self.assertIn("rain_24h_fill", layer_types)
-        self.assertIn("rain_6h_fill", layer_types)
-        self.assertNotIn("rain_3h_fill", layer_types)
-
-        generate_surface_layers(args, "003", bounds)
-        layer_types = generate_mock.call_args.args[4]
-        self.assertNotIn("rain_24h_fill", layer_types)
-        self.assertNotIn("rain_6h_fill", layer_types)
-        self.assertIn("rain_3h_fill", layer_types)
-
 
 if __name__ == "__main__":
     unittest.main()

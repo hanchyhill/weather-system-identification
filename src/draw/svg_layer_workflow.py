@@ -44,7 +44,6 @@ SURFACE_LAYER_TYPES = (
     "mslp_contour",
     "rain_24h_fill",
     "rain_6h_fill",
-    "rain_3h_fill",
 )
 PRECIPITATION_LAYER_HOURS = {
     "rain_24h_fill": 24,

@@ -63,10 +63,16 @@ def run_cycle(
     output_root: str | None = None,
     source: str = "ecmwfthin",
     save_image: bool = True,
+    save_jet_trough_image: bool = False,
     save_json: bool = True,
     show_progress: bool = True,
 ) -> dict[str, bool]:
-    """Run jet, trough, cold-front, and vortex workflows for the latest base time."""
+    """Run all scheduled workflows for the latest base time.
+
+    Jet and trough images are disabled by default because the scheduled
+    workflow only needs their JSON products.  Set ``save_jet_trough_image``
+    to ``True`` when diagnostic images are needed.
+    """
     if output_root is None:
         output_root = default_output_root()
     init_time = calLatestBaseTime()
@@ -79,7 +85,7 @@ def run_cycle(
             init_time=init_time,
             output_root=output_root,
             source=source,
-            save_image=save_image,
+            save_image=save_jet_trough_image,
             save_json=save_json,
             show_progress=show_progress,
         ),
@@ -89,7 +95,7 @@ def run_cycle(
             init_time=init_time,
             output_root=output_root,
             source=source,
-            save_image=save_image,
+            save_image=save_jet_trough_image,
             save_json=save_json,
             show_progress=show_progress,
         ),
@@ -123,6 +129,7 @@ def run_scheduler(
     output_root: str | None = None,
     source: str = "ecmwfthin",
     save_image: bool = True,
+    save_jet_trough_image: bool = False,
     save_json: bool = True,
     show_progress: bool = True,
 ) -> None:
@@ -133,6 +140,7 @@ def run_scheduler(
         output_root=output_root,
         source=source,
         save_image=save_image,
+        save_jet_trough_image=save_jet_trough_image,
         save_json=save_json,
         show_progress=show_progress,
     )
@@ -146,6 +154,7 @@ def run_scheduler(
             output_root=output_root,
             source=source,
             save_image=save_image,
+            save_jet_trough_image=save_jet_trough_image,
             save_json=save_json,
             show_progress=show_progress,
         )
@@ -159,6 +168,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source", default="ecmwfthin")
     parser.add_argument("--save-image", dest="save_image", action="store_true", default=True)
     parser.add_argument("--no-save-image", dest="save_image", action="store_false")
+    parser.add_argument(
+        "--save-jet-trough-image",
+        action="store_true",
+        help="Save diagnostic images for jet and trough workflows.",
+    )
     parser.add_argument("--save-json", dest="save_json", action="store_true", default=True)
     parser.add_argument("--no-save-json", dest="save_json", action="store_false")
     parser.add_argument("--quiet", action="store_true", help="Hide workflow progress output.")
@@ -172,6 +186,7 @@ def main() -> None:
             output_root=args.output_root,
             source=args.source,
             save_image=args.save_image,
+            save_jet_trough_image=args.save_jet_trough_image,
             save_json=args.save_json,
             show_progress=not args.quiet,
         )

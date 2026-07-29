@@ -151,6 +151,22 @@ uv sync
    uv run python src/jet.py --init-time 2026062900 --target-levs 850 --no-save-image
    ```
 
+### SVG 天气图层绘图测试
+
+在仓库根目录执行以下命令，可使用 `2026072812` 起报的默认预报时效、气压层和瓦片层级生成 SVG 图层。`--overwrite` 会重新生成已有的 SVG 文件，便于检查绘图修改结果。
+
+```bash
+uv run python src/draw/generate_svg_layers.py --init-time 2026072812 --overwrite
+```
+
+如需先快速验证起报场（`000` 时效），可执行：
+
+```bash
+uv run python src/draw/generate_svg_layers.py --init-time 2026072812 --fc-hours 000 --overwrite
+```
+
+可按机器资源增加并行工作进程，例如 `--workers 4`。当前为减少重复风场产品，默认不生成流线图、风场箭头以及 3 小时累计降水图层；风向杆、6/24 小时累计降水和其他图层仍会生成。
+
 ## 配置说明
 
 ### 数据服务器配置
