@@ -1,5 +1,6 @@
 let registration = null
 const statusListeners = new Set()
+const downloadDebugListeners = new Set()
 
 export const EMPTY_PREFETCH_STATUS = {
   state: 'idle', initTime: '', ready: 0, total: 0, downloaded: 0, failed: 0, reason: ''
@@ -24,37 +25,70 @@ function controller() {
   return isServiceWorkerSupported() ? navigator.serviceWorker.controller : null
 }
 
-export function prefetchLatest(initTime, options = {}) {
+// ServiceWorker.postMessage 使用结构化克隆，不能接收 Vue reactive/ref 产生的 Proxy。
+// 在唯一的消息边界重建普通数组和标量，避免任一调用方误传响应式对象。
+export function cloneablePrefetchOptions(options = {}) {
+  return {
+    enabled: options?.enabled !== false,
+    zLevels: Array.from(options?.zLevels || [], Number),
+    layerTypes: Array.from(options?.layerTypes || [], String),
+    levels: Array.from(options?.levels || [], String)
+  }
+}
+
+function postToController(message) {
   const target = controller()
-  if (!target || !initTime) return false
-  target.postMessage({ type: 'prefetchLatest', initTime, options })
-  return true
+  if (!target) return false
+  try {
+    target.postMessage(message)
+    return true
+  } catch (error) {
+    console.warn('[sw] 消息发送失败：', error)
+    return false
+  }
+}
+
+export function prefetchLatest(initTime, options = {}) {
+  if (!initTime) return false
+  return postToController({
+    type: 'prefetchLatest',
+    initTime: String(initTime),
+    options: cloneablePrefetchOptions(options)
+  })
 }
 
 // 旧调用入口保留；SW 端仍会只选择最新时次。
 export function prefetchInitTimes(initTimes, options = {}) {
-  const target = controller()
-  if (!target || !Array.isArray(initTimes) || !initTimes.length) return false
-  target.postMessage({ type: 'prefetch', initTimes, options })
-  return true
+  if (!Array.isArray(initTimes) || !initTimes.length) return false
+  return postToController({
+    type: 'prefetch',
+    initTimes: Array.from(initTimes, String),
+    options: cloneablePrefetchOptions(options)
+  })
 }
 
 export function cancelPrefetch() {
-  controller()?.postMessage({ type: 'cancelPrefetch' })
+  return postToController({ type: 'cancelPrefetch' })
 }
 
 export function setPrefetchOptions(options) {
-  const target = controller()
-  if (!target) return false
-  target.postMessage({ type: 'setPrefetchOptions', options: options || {} })
-  return true
+  return postToController({
+    type: 'setPrefetchOptions',
+    options: cloneablePrefetchOptions(options)
+  })
 }
 
 export function requestPrefetchStatus() {
-  const target = controller()
-  if (!target) return false
-  target.postMessage({ type: 'getPrefetchStatus' })
-  return true
+  return postToController({ type: 'getPrefetchStatus' })
+}
+
+export function setServiceWorkerDownloadDebug(enabled) {
+  return postToController({ type: 'setDownloadDebug', enabled: Boolean(enabled) })
+}
+
+export function subscribeServiceWorkerDownloadDebug(listener) {
+  downloadDebugListeners.add(listener)
+  return () => downloadDebugListeners.delete(listener)
 }
 
 export function subscribePrefetchStatus(listener) {
@@ -64,8 +98,11 @@ export function subscribePrefetchStatus(listener) {
 
 if (isServiceWorkerSupported()) {
   navigator.serviceWorker.addEventListener('message', (event) => {
-    if (event.data?.type !== 'prefetchStatus') return
-    const next = { ...EMPTY_PREFETCH_STATUS, ...event.data }
-    for (const listener of statusListeners) listener(next)
+    if (event.data?.type === 'prefetchStatus') {
+      const next = { ...EMPTY_PREFETCH_STATUS, ...event.data }
+      for (const listener of statusListeners) listener(next)
+    } else if (event.data?.type === 'downloadDebug') {
+      for (const listener of downloadDebugListeners) listener(event.data.record || {})
+    }
   })
 }

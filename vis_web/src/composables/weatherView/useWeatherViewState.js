@@ -32,6 +32,7 @@ import {
   loadSavedMapViews
 } from './helpers'
 import { availableForecastHours } from './forecastAvailability'
+import { directSvgLayerRecord } from './directSvgRecord.js'
 
 // 运行期非响应式共享变量（原文件中的模块级 let）：跨行为模块读写，装配后由各模块直接改写。
 export function createRuntime() {
@@ -77,6 +78,9 @@ export function createWeatherViewStore(initialView = {}) {
   const minCanvasHeight = compactView ? 200 : 420
   const syncState = initialView.syncState || null
   const syncId = initialView.syncId || null
+  const multiMapLoadCoordinator = initialView.multiMapLoadCoordinator || null
+  const multiMapLoadGeneration = Number(initialView.multiMapLoadGeneration) || 0
+  const multiMapPanelId = initialView.multiMapPanelId || syncId || null
 
   const canvasRef = ref(null)
   const shellRef = ref(null)
@@ -448,7 +452,11 @@ export function createWeatherViewStore(initialView = {}) {
   // —— 图层/瓦片记录与 URL（依赖 initTime/fcHour/level/manifest ref）——
   function recordForLayerType(targetLayerType) {
     const products = manifest.value?.products
-    return products?.[fcHour.value]?.[level.value]?.[targetLayerType] || null
+    const manifestRecord = products?.[fcHour.value]?.[level.value]?.[targetLayerType] || null
+    if (manifestRecord || manifest.value || !compactView || !multiMapLoadCoordinator) {
+      return manifestRecord
+    }
+    return directSvgLayerRecord(fcHour.value, level.value, targetLayerType)
   }
 
   function selectedLayerHasTiles() {
@@ -547,6 +555,9 @@ export function createWeatherViewStore(initialView = {}) {
     initialLayers,
     compactView,
     compactPreloadFcHours,
+    multiMapLoadCoordinator,
+    multiMapLoadGeneration,
+    multiMapPanelId,
     minCanvasWidth,
     minCanvasHeight,
     syncState,

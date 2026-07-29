@@ -8,6 +8,12 @@ import { defineConfig } from 'vite'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, '..')
 const dataRoot = path.join(repoRoot, 'data')
+const mapDataRoot = path.join(__dirname, 'src', 'source')
+
+const staticMapFiles = new Map([
+  ['110m.json', path.join(mapDataRoot, '110m.json')],
+  ['bou2_4l.topo.simplify.json', path.join(mapDataRoot, 'bou2_4l.topo.simplify.json')]
+])
 
 function localDataPlugin() {
   return {
@@ -41,12 +47,50 @@ function localDataPlugin() {
           fs.createReadStream(resolvedPath).pipe(res)
         })
       })
+
+      // 生产环境由 generateBundle 输出这些文件；开发环境直接从源码目录读取，
+      // 以保持 /map-data 路径在两种环境下一致。
+      server.middlewares.use('/map-data', (req, res, next) => {
+        const fileName = decodeURIComponent(req.url || '/').split('?')[0].replace(/^\/+/, '')
+        const sourcePath = staticMapFiles.get(fileName)
+        if (!sourcePath) {
+          next()
+          return
+        }
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+        fs.createReadStream(sourcePath).pipe(res)
+      })
+    },
+    generateBundle() {
+      for (const [fileName, sourcePath] of staticMapFiles) {
+        this.emitFile({
+          type: 'asset',
+          fileName: `map-data/${fileName}`,
+          source: fs.readFileSync(sourcePath)
+        })
+      }
     }
   }
 }
 
 export default defineConfig({
   plugins: [vue(), localDataPlugin()],
+  build: {
+    rolldownOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          // Naive UI 的组件可按顶层目录安全拆分；将其合为一个 vendor 包仍会超过
+          // Vite 的 500 kB 告警阈值，且不利于缓存与并行下载。
+          const naiveComponent = id.match(/[\\/]naive-ui[\\/]es[\\/]([^\\/]+)/)?.[1]
+          if (naiveComponent) return `naive-${naiveComponent}`
+          if (id.includes('lucide-vue-next')) return 'icons'
+          if (id.includes('d3') || id.includes('topojson-client')) return 'map-libs'
+          if (id.includes('vue') || id.includes('pinia')) return 'vue-vendor'
+        }
+      }
+    }
+  },
   server: {
     fs: {
       allow: [repoRoot]

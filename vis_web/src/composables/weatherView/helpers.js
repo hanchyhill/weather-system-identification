@@ -2,6 +2,7 @@
 // 均不依赖响应式状态（个别函数以参数形式接收 fallbackLayerOptions 等常量），从原文件原样抽出。
 import { sharedSvgImageCache } from '../../utils/indexedDBCache'
 import { runQueued, PRIORITY } from '../../utils/loadQueue'
+import { recordDownloadDebug } from '../../utils/downloadDebug'
 import {
   FILL_LAYER_TYPES,
   WIND_OVERLAY_LAYER_TYPES,
@@ -254,16 +255,27 @@ export function scaleSvgMarkup(text, scale) {
 // 仅把原始 SVG 写入共享 IndexedDB，不解码图片；供相邻预报时效的低优先级预加载使用。
 export async function cacheSvgSource(url, priority = PRIORITY.LOW, signal = null, scheduling = {}) {
   if (!url) return null
+  const startedAt = performance.now()
   const cached = await cache.getSource(url)
-  if (cached) return cached
+  if (cached) {
+    recordDownloadDebug({ kind: 'svg', phase: 'indexeddb-cache-hit', url, timingMs: { total: performance.now() - startedAt } })
+    return cached
+  }
+  recordDownloadDebug({ kind: 'svg', phase: 'queue-enter', url, priority: priority === PRIORITY.HIGH ? 'high' : 'low' })
   let pending = inFlightSourceLoads.get(url)
   // 可见请求不能继承一个可能马上被调度器中止的 LOW Promise；另起 HIGH 会触发低优先级取消。
   if (!pending || (priority === PRIORITY.HIGH && pending.priority === PRIORITY.LOW)) {
     const task = runQueued(async (schedulerSignal) => {
+      const networkStartedAt = performance.now()
+      recordDownloadDebug({ kind: 'svg', phase: 'network-start', url, priority: priority === PRIORITY.HIGH ? 'high' : 'low' })
       const response = await fetch(url, { signal: schedulerSignal })
+      recordDownloadDebug({ kind: 'svg', phase: 'response-headers', url, status: response.status, timingMs: { queueAndTtfb: performance.now() - networkStartedAt }, headers: {
+        cacheControl: response.headers.get('cache-control'), contentLength: response.headers.get('content-length'), etag: response.headers.get('etag'), serverTiming: response.headers.get('server-timing')
+      } })
       if (!response.ok) return null
       const blob = await response.blob()
       await cache.putSource(url, blob, response.headers.get('content-type'))
+      recordDownloadDebug({ kind: 'svg', phase: 'indexeddb-stored', url, timingMs: { total: performance.now() - networkStartedAt }, bytes: blob.size })
       return blob
     }, priority, signal, scheduling)
     pending = { promise: task, priority }

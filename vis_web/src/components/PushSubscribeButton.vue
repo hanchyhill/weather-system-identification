@@ -15,7 +15,14 @@ import {
   unsubscribeFromPush
 } from '../utils/pushClient'
 import { DEFAULT_PREFETCH_OPTIONS, loadPrefetchOptions, savePrefetchOptions } from '../utils/prefetchOptions'
-import { cancelPrefetch, prefetchLatest, setPrefetchOptions } from '../utils/swClient'
+import {
+  cancelPrefetch,
+  prefetchLatest,
+  setPrefetchOptions,
+  setServiceWorkerDownloadDebug,
+  subscribeServiceWorkerDownloadDebug
+} from '../utils/swClient'
+import { exportDownloadDebug, isDownloadDebugEnabled, recordServiceWorkerDownload, setDownloadDebugEnabled } from '../utils/downloadDebug'
 
 const Z_LEVEL_OPTIONS = [
   { value: 0, label: 'z0 · 概览' },
@@ -33,6 +40,8 @@ const activeTab = ref('updates')
 const fileInput = ref(null)
 const backupMessage = ref('')
 const importedBackup = ref(false)
+const downloadDebugEnabled = ref(false)
+const debugMessage = ref('')
 
 // 预取策略（本地副本，弹窗内编辑，「保存并应用」时落盘 + 下发）
 const zLevels = ref([...DEFAULT_PREFETCH_OPTIONS.zLevels])
@@ -46,6 +55,7 @@ function loadLocal() {
   zLevels.value = options.zLevels
   layerTypes.value = options.layerTypes
   levels.value = options.levels
+  downloadDebugEnabled.value = isDownloadDebugEnabled()
 }
 
 async function refreshState() {
@@ -57,6 +67,8 @@ async function refreshState() {
 onMounted(async () => {
   loadLocal()
   await refreshState()
+  setServiceWorkerDownloadDebug(downloadDebugEnabled.value)
+  subscribeServiceWorkerDownloadDebug(recordServiceWorkerDownload)
 })
 
 async function openDialog() {
@@ -141,6 +153,24 @@ async function importConfigurations(event) {
 
 function reloadPage() {
   window.location.reload()
+}
+
+function toggleDownloadDebug(value) {
+  setDownloadDebugEnabled(value)
+  setServiceWorkerDownloadDebug(value)
+  debugMessage.value = value ? '已开始记录；请复现操作后导出 JSON。' : '已停止记录（已有记录仍可导出）。'
+}
+
+function exportDownloadDebugLog() {
+  const report = exportDownloadDebug()
+  const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `weather-download-debug-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
+  link.click()
+  URL.revokeObjectURL(url)
+  debugMessage.value = `已导出 ${report.summary.recordCount} 条记录。`
 }
 </script>
 
@@ -237,6 +267,25 @@ function reloadPage() {
 
             <p v-if="backupMessage" class="backup-message">{{ backupMessage }}</p>
             <n-button v-if="importedBackup" size="small" type="primary" @click="reloadPage">立即刷新并应用</n-button>
+          </n-tab-pane>
+
+          <n-tab-pane name="download-debug" tab="下载调试">
+            <div class="push-row">
+              <div>
+                <div class="push-row__title">记录数据下载时序</div>
+                <div class="push-row__desc">记录 SVG/JSON 的排队、缓存、TTFB、下载、传输大小、协议与 Service Worker 预加载事件。</div>
+              </div>
+              <n-switch :value="downloadDebugEnabled" @update:value="toggleDownloadDebug" />
+            </div>
+            <div class="backup-section">
+              <div class="backup-section__title">导出诊断记录</div>
+              <p>开启后复现切换图层、缩放和多图操作，再导出 JSON。敏感查询参数不会写入记录。</p>
+              <n-button size="small" type="primary" @click="exportDownloadDebugLog">
+                <template #icon><Download :size="15" /></template>
+                导出下载记录
+              </n-button>
+            </div>
+            <p v-if="debugMessage" class="backup-message">{{ debugMessage }}</p>
           </n-tab-pane>
         </n-tabs>
 

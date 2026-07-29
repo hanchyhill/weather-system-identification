@@ -1,11 +1,9 @@
 // 数据加载：世界/中国底图、manifest、槽线/急流/冷锋/涡旋 JSON，以及 SVG 图层与瓦片加载、
 // 相邻预报时效预加载。全部从原 useWeatherView.js 迁出，改为读 store（含 runtime 上的加载状态）。
-import { feature } from 'topojson-client'
-
-import worldTopo from '../../source/110m.json'
-import chinaTopo from '../../source/bou2_4l.topo.simplify.json'
 import { fetchJsonShared } from '../../utils/jsonRequestCache'
 import { PRIORITY } from '../../utils/loadQueue'
+import { sharedManifestIndexedDBCache } from '../../utils/manifestIndexedDBCache'
+import { loadBaseFeatures } from '../../utils/mapBaseData'
 import { COLD_FRONT_LEVELS } from './constants'
 import {
   getTileZoom,
@@ -25,22 +23,8 @@ import {
 //   n+1, n-1, n+2, n-2, n+3, n-3, n+4, n-4, n+5, n-5, n+6, n-6, n+7，共 13 个时效。
 const PRELOAD_FC_HOUR_OFFSETS = [1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7]
 
-// TopoJSON 转 GeoJSON 是纯计算且结果只读，所有单图/子图共享一次转换结果。
-let sharedBaseFeatures = null
-
-function baseFeatures() {
-  if (!sharedBaseFeatures) {
-    sharedBaseFeatures = {
-      world: feature(worldTopo, worldTopo.objects.land),
-      china: feature(chinaTopo, chinaTopo.objects.bou2_4l)
-    }
-  }
-  return sharedBaseFeatures
-}
-
 export function useWeatherData(store) {
   const {
-    initialView,
     canvasSize,
     zoomTransform,
     manifest,
@@ -70,6 +54,9 @@ export function useWeatherData(store) {
     hoverVortexTrack,
     compactView,
     compactPreloadFcHours,
+    multiMapLoadCoordinator,
+    multiMapLoadGeneration,
+    multiMapPanelId,
     syncId,
     cache,
     runtime,
@@ -83,11 +70,17 @@ export function useWeatherData(store) {
     requestDraw
   } = store
 
-  const compactVisibleConcurrency = Math.max(1, Number(initialView?.maxLoadConcurrent) || 1)
-  // 多图中按父级分配的预算限制单个子图占用，避免先挂载的子图吃满全局队列。
+  const coordinatedMultiMap = Boolean(
+    compactView && multiMapLoadCoordinator && multiMapPanelId
+  )
+  const isCurrentMultiMapPanel = () => (
+    !coordinatedMultiMap
+    || multiMapLoadCoordinator.isPanelCurrent(multiMapPanelId, multiMapLoadGeneration)
+  )
+  // 多图只提供分组键；全局队列按各组当前活跃数公平派发，并自动复用空闲槽位。
   // 单图不分组，仍可使用全部 8 个槽位。
   const visibleScheduling = compactView
-    ? { groupKey: syncId || Symbol('compact-weather-view'), maxGroupConcurrent: compactVisibleConcurrency }
+    ? { groupKey: syncId || Symbol('compact-weather-view') }
     : {}
   const preloadScheduling = compactView
     ? { groupKey: visibleScheduling.groupKey, maxGroupConcurrent: 1 }
@@ -97,10 +90,16 @@ export function useWeatherData(store) {
     return fetchJsonShared(url, { maxAge })
   }
 
-  function loadWorld() {
+  async function fetchManifestDirect(url, signal) {
+    const response = await fetch(url, { cache: 'no-cache', signal })
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
+    return response.json()
+  }
+
+  async function loadWorld() {
     try {
       loadingState.map = '加载中'
-      const features = baseFeatures()
+      const features = await loadBaseFeatures()
       worldFeatures.value = features.world
       chinaFeatures.value = features.china
       loadingState.map = '完成'
@@ -111,41 +110,41 @@ export function useWeatherData(store) {
     }
   }
 
-  async function loadManifest({ preferredFcHour = null, fallbackFcHour = null } = {}) {
-    errorMessage.value = ''
-    manifest.value = null
-    activeSvgLayers.value = []
-    loadingState.manifest = '加载中'
+  function applyManifest(manifestData, preferredFcHour, fallbackFcHour) {
+    manifest.value = manifestData
+    loadingState.manifest = '完成'
+    const manifestLevels = (manifest.value.levels || []).map(String)
+    if (!manifestLevels.includes(String(level.value))) {
+      const firstLevel = manifest.value.levels?.find((item) => item !== 'surface') || manifest.value.levels?.[0]
+      if (firstLevel) level.value = String(firstLevel)
+    }
+    if (!layerOptions.value.some((item) => item.value === layerType.value)) {
+      layerType.value = layerOptions.value[0]?.value || layerType.value
+    }
+    setSelectedLayerTypes(selectedLayerTypes.value)
+    if (sliderFcHours.value.length) {
+      if (preferredFcHour && sliderFcHours.value.includes(preferredFcHour)) {
+        fcHour.value = preferredFcHour
+      } else if (fallbackFcHour && sliderFcHours.value.includes(fallbackFcHour)) {
+        fcHour.value = fallbackFcHour
+      } else if (!sliderFcHours.value.includes(fcHour.value)) {
+        fcHour.value = firstAvailableFcHour.value
+      }
+    }
+  }
 
+  async function loadCurrentForeground() {
+    await loadActiveLayer()
+    // 多图必须等全部子图的当前 SVG 完成后，才让天气系统 JSON 进入网络，
+    // 避免先完成子图的 JSON 与仍在加载的可见 SVG 争用服务器连接。
+    if (
+      coordinatedMultiMap
+      && (
+        !await multiMapLoadCoordinator.waitForVisible(multiMapLoadGeneration)
+        || !isCurrentMultiMapPanel()
+      )
+    ) return false
     try {
-      // Manifest 仍由 SW 网络优先；这里只在同一批子图挂载期间短暂合并请求。
-      manifest.value = await fetchJson(`/data/products/${initTime.value}/manifest.json`, 2_000)
-      loadingState.manifest = '完成'
-      const manifestLevels = (manifest.value.levels || []).map(String)
-      if (!manifestLevels.includes(String(level.value))) {
-        const firstLevel = manifest.value.levels?.find((item) => item !== 'surface') || manifest.value.levels?.[0]
-        if (firstLevel) level.value = String(firstLevel)
-      }
-      if (!layerOptions.value.some((item) => item.value === layerType.value)) {
-        layerType.value = layerOptions.value[0]?.value || layerType.value
-      }
-      setSelectedLayerTypes(selectedLayerTypes.value)
-      if (sliderFcHours.value.length) {
-        if (preferredFcHour && sliderFcHours.value.includes(preferredFcHour)) {
-          fcHour.value = preferredFcHour
-        } else if (fallbackFcHour && sliderFcHours.value.includes(fallbackFcHour)) {
-          fcHour.value = fallbackFcHour
-        } else if (!sliderFcHours.value.includes(fcHour.value)) {
-          fcHour.value = firstAvailableFcHour.value
-        }
-      }
-    } catch (error) {
-      loadingState.manifest = '未找到'
-      errorMessage.value = `未找到 /data/products/${initTime.value}/manifest.json；仍可查看槽线 JSON。`
-    } finally {
-      // 先完成用户最关心的 SVG，再并行补齐天气系统 JSON。原先逐项 await 会让每个
-      // 子图连续经历 5 次网络往返，多图下形成明显的阶梯式完成。
-      await loadActiveLayer()
       await Promise.all([
         loadTrough(),
         loadColdFronts(),
@@ -153,63 +152,160 @@ export function useWeatherData(store) {
         loadVortexCenters(),
         loadVortexTracks()
       ])
+    } finally {
+      if (coordinatedMultiMap && isCurrentMultiMapPanel()) {
+        multiMapLoadCoordinator.foregroundFinished(multiMapPanelId, multiMapLoadGeneration)
+      }
       requestDraw()
+    }
+    return true
+  }
+
+  async function loadManifest({
+    preferredFcHour = null,
+    fallbackFcHour = null,
+    forceRefresh = false
+  } = {}) {
+    errorMessage.value = ''
+    manifest.value = null
+    activeSvgLayers.value = []
+    const manifestUrl = `/data/products/${initTime.value}/manifest.json`
+
+    if (coordinatedMultiMap) {
+      // 多图首屏按稳定路径直接请求 SVG。大体积 Manifest 直到所有当前前台资源完成后
+      // 才按起报时次串行下载，避免多起报比较时多个 10MB JSON 与当前图像争用带宽。
+      loadingState.manifest = '等待当前图像'
+      if (!await loadCurrentForeground() || !isCurrentMultiMapPanel()) return
+      if (
+        !await multiMapLoadCoordinator.waitForForeground(multiMapLoadGeneration)
+        || !isCurrentMultiMapPanel()
+      ) return
+
+      loadingState.manifest = '后台加载中'
+      try {
+        const manifestData = await multiMapLoadCoordinator.getManifest(
+          initTime.value,
+          (signal) => fetchManifestDirect(manifestUrl, signal)
+        )
+        if (!isCurrentMultiMapPanel()) return
+        applyManifest(manifestData, preferredFcHour, fallbackFcHour)
+        schedulePreload()
+      } catch (error) {
+        if (!isCurrentMultiMapPanel() || error?.name === 'AbortError') return
+        loadingState.manifest = '未找到'
+        errorMessage.value = `未找到 ${manifestUrl}；当前 SVG 已按固定路径直接加载。`
+      } finally {
+        requestDraw()
+      }
+      return
+    }
+
+    loadingState.manifest = '加载中'
+    try {
+      if (forceRefresh) await sharedManifestIndexedDBCache.delete(initTime.value)
+      const persisted = forceRefresh
+        ? null
+        : await sharedManifestIndexedDBCache.get(initTime.value)
+      const manifestData = persisted?.value
+        ?? await fetchManifestDirect(manifestUrl)
+      if (!persisted) void sharedManifestIndexedDBCache.put(initTime.value, manifestData)
+      applyManifest(manifestData, preferredFcHour, fallbackFcHour)
+    } catch (error) {
+      loadingState.manifest = '未找到'
+      errorMessage.value = `未找到 ${manifestUrl}；仍可查看槽线 JSON。`
+    } finally {
+      await loadCurrentForeground()
     }
   }
 
   async function loadActiveLayer() {
-    const loadId = ++runtime.activeLayerLoadId
-    runtime.visibleTileLoadId += 1
-    // 切换时效/图层时先取消上一轮预加载，把并发名额与主线程让给“当前所需”的可见瓦片；
-    // 本轮可见瓦片加载完成后会在末尾重新 schedulePreload。
-    cancelPreload()
-    activeSvgLayers.value = []
-    setSelectedLayerTypes(selectedLayerTypes.value)
-    if (sliderFcHours.value.length && !sliderFcHours.value.includes(fcHour.value)) {
-      fcHour.value = firstAvailableFcHour.value
-    }
-    const projection = buildProjection()
-    const tileZoom = getTileZoom(zoomTransform.value.k)
-    runtime.loadedTileZoom = tileZoom
-    const renderScale = renderScaleForZoom(zoomTransform.value.k, compactView, canvasSize)
-    runtime.loadedRenderScale = renderScale
-    const candidates = selectedLayerTypes.value.map((type) => ({
-      type,
-      record: recordForLayerType(type)
-    }))
-    const loadable = candidates.filter((item) => layerHasLoadable(item.record))
-
-    if (!loadable.length) {
-      loadingState.svg = '无匹配图层'
-      requestDraw()
-      return
-    }
-
+    const coordinatorToken = coordinatedMultiMap
+      ? multiMapLoadCoordinator.visibleStarted(multiMapPanelId, multiMapLoadGeneration)
+      : null
+    if (coordinatedMultiMap && !coordinatorToken) return
     try {
-      loadingState.svg = '加载中'
-      const loadedLayers = await Promise.all(loadable.map((item, order) => (
-        hasTiles(item.record)
-          ? loadSvgTileLayer(item, order, tileZoom, projection, renderScale)
-          : loadSvgLayer(item, order, renderScale)
-      )))
-      if (loadId !== runtime.activeLayerLoadId) return
-      activeSvgLayers.value = loadedLayers.filter(Boolean)
-      const missingCount = candidates.length - activeSvgLayers.value.length
-      loadingState.svg = missingCount
-        ? `${activeSvgLayers.value.length}层完成 / ${missingCount}层缺失`
-        : `${activeSvgLayers.value.length}层完成`
-      // 加载期间若布局跨过了分辨率档位，立即按最新尺寸补一次，避免保留旧尺寸位图。
-      if (renderScale !== renderScaleForZoom(zoomTransform.value.k, compactView, canvasSize)) {
-        loadActiveLayer()
+      const loadId = ++runtime.activeLayerLoadId
+      runtime.visibleTileLoadId += 1
+      // 切换时效/图层时先取消上一轮预加载，把并发名额与主线程让给“当前所需”的可见瓦片；
+      // 本轮可见瓦片加载完成后会在末尾重新 schedulePreload。
+      cancelPreload()
+      activeSvgLayers.value = []
+      setSelectedLayerTypes(selectedLayerTypes.value)
+      if (sliderFcHours.value.length && !sliderFcHours.value.includes(fcHour.value)) {
+        fcHour.value = firstAvailableFcHour.value
+      }
+      const projection = buildProjection()
+      const tileZoom = getTileZoom(zoomTransform.value.k)
+      runtime.loadedTileZoom = tileZoom
+      const renderScale = renderScaleForZoom(zoomTransform.value.k, compactView, canvasSize)
+      runtime.loadedRenderScale = renderScale
+      const candidates = selectedLayerTypes.value.map((type) => ({
+        type,
+        record: recordForLayerType(type)
+      }))
+      const loadable = candidates.filter((item) => layerHasLoadable(item.record))
+
+      if (!loadable.length) {
+        loadingState.svg = '无匹配图层'
+        requestDraw()
         return
       }
-      schedulePreload()
+
+      try {
+        loadingState.svg = '加载中'
+        const loadedLayers = new Array(loadable.length)
+        const publishLayer = (order, layer) => {
+          if (!layer || loadId !== runtime.activeLayerLoadId) return
+          loadedLayers[order] = layer
+          activeSvgLayers.value = loadedLayers.filter(Boolean)
+          requestDraw()
+        }
+        await Promise.all(loadable.map(async (item, order) => {
+          const layer = hasTiles(item.record)
+            ? await loadSvgTileLayer(
+              item,
+              order,
+              tileZoom,
+              projection,
+              renderScale,
+              (partialLayer) => publishLayer(order, partialLayer)
+            )
+            : await loadSvgLayer(item, order, renderScale)
+          publishLayer(order, layer)
+        }))
+        if (loadId !== runtime.activeLayerLoadId) return
+        const missingCount = candidates.length - activeSvgLayers.value.length
+        loadingState.svg = missingCount
+          ? `${activeSvgLayers.value.length}层完成 / ${missingCount}层缺失`
+          : `${activeSvgLayers.value.length}层完成`
+        // 加载期间若布局跨过了分辨率档位，立即按最新尺寸补一次，避免保留旧尺寸位图。
+        if (renderScale !== renderScaleForZoom(zoomTransform.value.k, compactView, canvasSize)) {
+          loadActiveLayer()
+          return
+        }
+        schedulePreload()
+      } finally {
+        requestDraw()
+      }
     } finally {
-      requestDraw()
+      if (coordinatedMultiMap) {
+        multiMapLoadCoordinator.visibleFinished(
+          multiMapPanelId,
+          multiMapLoadGeneration,
+          coordinatorToken
+        )
+      }
     }
   }
 
-  async function loadSvgTileLayer({ type, record }, order, desiredZ, projection, renderScale = 1) {
+  async function loadSvgTileLayer(
+    { type, record },
+    order,
+    desiredZ,
+    projection,
+    renderScale = 1,
+    onProgress = null
+  ) {
     const z = resolveTileZoom(record, desiredZ)
     if (z == null) return null
 
@@ -220,18 +316,25 @@ export function useWeatherData(store) {
 
     if (!visibleTiles.length) return null
 
-    const loadedTiles = (await Promise.all(visibleTiles.map((tile) => loadSvgTile(tile, renderScale)))).filter(Boolean)
-    if (!loadedTiles.length) return null
-
-    return {
+    const layer = {
       type,
       record,
       z,
       desiredZ,
-      tiles: loadedTiles,
+      tiles: [],
       isFill: isFillLayerRecord(type, record),
       order
     }
+    await Promise.all(visibleTiles.map(async (tile) => {
+      const loadedTile = await loadSvgTile(tile, renderScale)
+      if (!loadedTile) return
+      layer.tiles = [...layer.tiles, loadedTile]
+      onProgress?.(layer)
+    }))
+    const loadedTiles = layer.tiles
+    if (!loadedTiles.length) return null
+
+    return layer
   }
 
   async function loadVisibleTileDelta() {
@@ -402,6 +505,15 @@ export function useWeatherData(store) {
 
   // 在当前时效瓦片加载完毕后调度预加载；用延时+运行号确保不阻塞渲染且旧任务可被取消。
   function schedulePreload() {
+    if (coordinatedMultiMap) {
+      if (!manifest.value) return
+      multiMapLoadCoordinator.registerPreload(
+        multiMapPanelId,
+        multiMapLoadGeneration,
+        { run: preloadNeighborForecasts, cancel: cancelPreload }
+      )
+      return
+    }
     cancelPreload()
     runtime.preloadTimer = setTimeout(() => {
       runtime.preloadTimer = null

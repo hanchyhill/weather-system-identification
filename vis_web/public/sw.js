@@ -28,6 +28,7 @@ let foregroundIdleUntil = 0
 let resumeTimer = null
 let broadcastTimer = null
 let lastBroadcast = 0
+let downloadDebugEnabled = false
 let status = {
   state: 'idle', initTime: '', ready: 0, total: 0, downloaded: 0, failed: 0, reason: ''
 }
@@ -76,8 +77,16 @@ self.addEventListener('message', (event) => {
       status = (await readMeta('status')) || status
       await broadcastStatus(true)
     })())
+  } else if (data.type === 'setDownloadDebug') {
+    downloadDebugEnabled = Boolean(data.enabled)
   }
 })
+
+async function broadcastDownloadDebug(record) {
+  if (!downloadDebugEnabled) return
+  const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+  for (const client of windows) client.postMessage({ type: 'downloadDebug', record: { at: new Date().toISOString(), ...record } })
+}
 
 self.addEventListener('push', (event) => {
   let payload = {}
@@ -206,15 +215,19 @@ async function startPrefetch(initTime, rawOptions, resume = false) {
           return
         }
         const url = missing[index++]
+        const startedAt = performance.now()
         try {
           const response = await fetch(url, { credentials: 'same-origin', signal: task.controller.signal })
+          await broadcastDownloadDebug({ kind: 'svg', phase: 'prefetch-response-headers', url, status: response.status, timingMs: { total: performance.now() - startedAt } })
           if (!response.ok) throw new Error(String(response.status))
           const blob = await response.blob()
           await putSource(url, blob, response.headers.get('content-type'), task.initTime)
+          await broadcastDownloadDebug({ kind: 'svg', phase: 'prefetch-stored', url, bytes: blob.size, timingMs: { total: performance.now() - startedAt } })
           taskStatus.ready += 1
           taskStatus.downloaded += 1
         } catch (error) {
           if (task.controller.signal.aborted) return
+          await broadcastDownloadDebug({ kind: 'svg', phase: 'prefetch-error', url, error: error?.message || String(error), timingMs: { total: performance.now() - startedAt } })
           taskStatus.failed += 1
         }
         if (task.controller.signal.aborted || currentTask !== task) return

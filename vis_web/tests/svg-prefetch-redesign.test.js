@@ -172,6 +172,32 @@ describe('页面严格优先级队列', () => {
     releases.get('b1')()
     await Promise.all(running)
   })
+
+  it('同批多图请求先覆盖各个面板，再复用剩余并发槽位', async () => {
+    const { PRIORITY, runQueued } = await import('../src/utils/loadQueue.js')
+    const events = []
+    let releaseAll
+    const gate = new Promise((resolve) => {
+      releaseAll = resolve
+    })
+    const running = []
+    for (const groupKey of ['a', 'b', 'c', 'd', 'e', 'f']) {
+      for (let index = 1; index <= 2; index += 1) {
+        const label = `${groupKey}${index}`
+        running.push(runQueued(async () => {
+          events.push(label)
+          await gate
+        }, PRIORITY.HIGH, null, { groupKey }))
+      }
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    assert.equal(events.length, 8)
+    assert.deepEqual(new Set(events.slice(0, 6).map((label) => label[0])), new Set(['a', 'b', 'c', 'd', 'e', 'f']))
+
+    releaseAll()
+    await Promise.all(running)
+  })
 })
 
 describe('多图 JSON 请求合并', () => {

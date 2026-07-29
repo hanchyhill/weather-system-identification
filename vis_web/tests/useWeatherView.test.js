@@ -300,6 +300,10 @@ describe('useWeatherView composition root', () => {
     view.refreshToLatest()
     assert.equal(view.initTime.value, '2026070412')
     assert.equal(harness.calls.filter(([name]) => name === 'loadManifest').length, loadCount + 1)
+    assert.deepEqual(harness.calls.at(-1), [
+      'loadManifest',
+      { preferredFcHour: null, fallbackFcHour: '006', forceRefresh: true }
+    ])
   })
 
   it('wires state watchers to the extracted behavior modules', async () => {

@@ -45,6 +45,9 @@ export function useWeatherView(initialView = {}) {
     syncState,
     syncId,
     compactView,
+    multiMapLoadCoordinator,
+    multiMapLoadGeneration,
+    multiMapPanelId,
     canvasRef,
     shellRef,
     canvasSize,
@@ -166,7 +169,7 @@ export function useWeatherView(initialView = {}) {
   })
 
   // 切换起报时次时优先保持有效时间不变。新起报缺少对应时效时，保留原预报时效。
-  function applyInitTime(nextInitTime) {
+  function applyInitTime(nextInitTime, { forceManifest = false } = {}) {
     const next = String(nextInitTime || '').trim()
     const currentDate = parseInitTime(initTime.value)
     const nextDate = parseInitTime(next)
@@ -179,7 +182,11 @@ export function useWeatherView(initialView = {}) {
       : null
 
     initTime.value = next
-    loadManifest({ preferredFcHour, fallbackFcHour: currentFcHour })
+    loadManifest({
+      preferredFcHour,
+      fallbackFcHour: currentFcHour,
+      ...(forceManifest ? { forceRefresh: true } : {})
+    })
     return true
   }
 
@@ -194,7 +201,7 @@ export function useWeatherView(initialView = {}) {
 
   // 点击“刷新”时重新对齐到最新起报时次（含后端绘图滞后一小时的补偿），再重新加载。
   function refreshToLatest() {
-    applyInitTime(calLatestBaseTime())
+    applyInitTime(calLatestBaseTime(), { forceManifest: true })
   }
 
   // 多时次选择器：同时指定起报时次与预报时效并重新加载。
@@ -379,6 +386,7 @@ export function useWeatherView(initialView = {}) {
     window.removeEventListener('keydown', handleDrawKeydown)
     // 卸载（含多图切换页导致子图 remount）时取消预加载，中止在途预取、释放并发名额。
     cancelPreload()
+    multiMapLoadCoordinator?.disposePanel(multiMapPanelId, multiMapLoadGeneration)
     if (runtime.fcReloadTimer) {
       clearTimeout(runtime.fcReloadTimer)
       runtime.fcReloadTimer = null
@@ -495,6 +503,7 @@ export function useWeatherView(initialView = {}) {
     projectionName,
     projectionOptions,
     refreshToLatest,
+    refreshMultiMapData: multiMap.refreshMultiMapData,
     resetView: projection.resetView,
     restoreDefaultMapViews: projection.restoreDefaultMapViews,
     saveLayerCombination: elementConfig.saveLayerCombination,

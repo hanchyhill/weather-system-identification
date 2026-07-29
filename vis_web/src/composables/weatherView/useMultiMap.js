@@ -3,6 +3,7 @@
 import { computed } from 'vue'
 
 import { cellKey } from '../../utils/elementSelectorConfig'
+import { calLatestBaseTime } from '../../utils/initTime'
 import {
   MULTI_ELEMENT_CONFIGURATION_STORAGE_KEY,
   MULTI_ELEMENT_FORECAST_CONFIGURATION_STORAGE_KEY,
@@ -654,6 +655,14 @@ export function useMultiMap(store) {
     multiMapPanels.value = []
   }
 
+  function refreshMultiMapData() {
+    if (!multiMapMode.value) return
+    const latestInitTime = calLatestBaseTime()
+    const changed = initTime.value !== latestInitTime
+    initTime.value = latestInitTime
+    if (!changed) openMultiMap(multiMapMode.value)
+  }
+
   // 用本模块的加载器填充 store 中初始为空的三处配置状态（store 无法直接依赖本模块）。
   multiElementConfigurations.value = loadMultiElementConfigurations()
   multiElementForecastRows.value = defaultMultiElementForecastRows()
@@ -696,6 +705,7 @@ export function useMultiMap(store) {
     applyMultiElementForecastConfiguration,
     deleteMultiElementForecastConfiguration,
     openMultiMap,
+    refreshMultiMapData,
     closeMultiMap
   }
 }

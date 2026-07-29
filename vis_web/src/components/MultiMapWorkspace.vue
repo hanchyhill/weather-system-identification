@@ -1,11 +1,11 @@
 <script setup>
-import { Camera, ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Save, Settings, Trash2, X } from 'lucide-vue-next'
+import { Camera, ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw, Save, Settings, Trash2, X } from 'lucide-vue-next'
 import { NButton, NButtonGroup, NInput, NModal, NPopover, NSelect, NTooltip } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 
 import { useScreenshot } from '../composables/useScreenshot'
 import { useWeatherViewContext } from '../context/weatherViewContext'
-import { MAX_CONCURRENT } from '../utils/loadQueue'
+import { createMultiMapLoadCoordinator } from '../utils/multiMapLoadCoordinator'
 import ElementSelector from './ElementSelector.vue'
 import ForecastSlider from './ForecastSlider.vue'
 import DrawingToolbar from './DrawingToolbar.vue'
@@ -49,6 +49,7 @@ const {
   multiElementPanelCountOptions,
   renameMultiElementConfiguration,
   renameMultiElementForecastConfiguration,
+  refreshMultiMapData,
   saveMultiElementConfiguration,
   saveMultiElementForecastConfiguration,
   saveMapView,
@@ -145,11 +146,18 @@ const gridStyle = computed(() => {
     '--multi-map-panel-count': count
   }
 })
-// 把全局可见资源并发预算平均分给子图：4 图每图 2 路，6/8/9 图每图 1 路。
-// 这样各子图同步推进，不会由先挂载的子图占满全部连接。
-const panelLoadConcurrency = computed(() => (
-  Math.max(1, Math.floor(MAX_CONCURRENT / Math.max(1, multiMapPanels.value.length)))
-))
+// 多图共享一个前台阶段屏障和 Manifest 会话缓存。全局网络队列负责按面板公平派发，
+// 不再给每张子图分配不可复用的固定并发额度。
+const multiMapLoadCoordinator = createMultiMapLoadCoordinator()
+const multiMapLoadGeneration = ref(0)
+
+watch(multiMapPanels, (panels) => {
+  multiMapLoadGeneration.value += 1
+  multiMapLoadCoordinator.beginBatch(
+    multiMapLoadGeneration.value,
+    panels.filter((panel) => panel.valid).map((panel) => panel.id)
+  )
+}, { immediate: true, flush: 'sync' })
 
 // 所有子图使用同一同步对象；它在进入多图时继承单图视角，并在模式切换时保持第一张图的视角。
 const syncState = multiMapSyncState
@@ -374,6 +382,11 @@ function toggleControlRail() {
   showControlRail.value = !showControlRail.value
 }
 
+function refreshData() {
+  multiMapLoadCoordinator.clearManifests()
+  refreshMultiMapData()
+}
+
 function selectMultiElementConfiguration(configuration) {
   if (isElementGridMode.value) applyMultiElementForecastConfiguration(configuration)
   else applyMultiElementConfiguration(configuration)
@@ -431,7 +444,10 @@ function confirmDeleteMultiElementConfiguration() {
 }
 
 watch(multiMapMode, (mode) => {
-  if (!mode) resetSyncState()
+  if (!mode) {
+    resetSyncState()
+    multiMapLoadCoordinator.dispose()
+  }
   activeElementPanelIndex.value = 0
   activePanelViewContext.value = null
 })
@@ -446,7 +462,10 @@ watch(multiMapPanels, (panels) => {
 })
 
 onMounted(() => window.addEventListener('keydown', handleMultiMapDrawingKeydown))
-onUnmounted(() => window.removeEventListener('keydown', handleMultiMapDrawingKeydown))
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleMultiMapDrawingKeydown)
+  multiMapLoadCoordinator.dispose()
+})
 </script>
 
 <template>
@@ -566,6 +585,15 @@ onUnmounted(() => window.removeEventListener('keydown', handleMultiMapDrawingKey
         </div>
       </div>
       <div class="multi-map-header-actions">
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button size="small" secondary @click="refreshData">
+              <template #icon><RefreshCw :size="15" /></template>
+              刷新数据
+            </n-button>
+          </template>
+          清除多图数据缓存并重新加载最新起报时次
+        </n-tooltip>
         <n-tooltip trigger="hover">
           <template #trigger>
             <n-button size="small" secondary @click="captureMultiMap">
@@ -782,8 +810,15 @@ onUnmounted(() => window.removeEventListener('keydown', handleMultiMapDrawingKey
     <div ref="gridRef" class="multi-map-grid" :style="gridStyle">
       <MultiMapPanel
         v-for="(panel, index) in multiMapPanels"
-        :key="`${panel.id}-load-${panelLoadConcurrency}`"
-        :panel="{ ...panel, syncId: panel.id, syncState, maxLoadConcurrent: panelLoadConcurrency }"
+        :key="`${panel.id}-load-${multiMapLoadGeneration}`"
+        :panel="{
+          ...panel,
+          syncId: panel.id,
+          syncState,
+          multiMapPanelId: panel.id,
+          multiMapLoadCoordinator,
+          multiMapLoadGeneration
+        }"
         :active="activeElementPanelIndex === index"
         @activate="activateElementPanel(index)"
         @ready="registerPanelViewContext(index, $event)"

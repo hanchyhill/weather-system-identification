@@ -11,6 +11,7 @@ const activeEntries = new Set()
 const activeByGroup = new Map()
 let highActive = 0
 let lowActive = 0
+let pumpScheduled = false
 
 function abortReason() {
   return new DOMException('被高优先级请求中断', 'AbortError')
@@ -34,13 +35,21 @@ function dispatch(entry) {
 }
 
 function nextDispatchableIndex(queue) {
-  return queue.findIndex((entry) => {
-    if (entry.groupKey == null || !Number.isFinite(entry.maxGroupConcurrent)) return true
-    return (activeByGroup.get(entry.groupKey) || 0) < entry.maxGroupConcurrent
+  let bestIndex = -1
+  let bestActive = Number.POSITIVE_INFINITY
+  queue.forEach((entry, index) => {
+    const groupActive = entry.groupKey == null ? 0 : (activeByGroup.get(entry.groupKey) || 0)
+    if (groupActive >= entry.maxGroupConcurrent) return
+    if (groupActive < bestActive) {
+      bestIndex = index
+      bestActive = groupActive
+    }
   })
+  return bestIndex
 }
 
 function pump() {
+  pumpScheduled = false
   while (activeEntries.size < MAX_CONCURRENT && highQueue.length) {
     const index = nextDispatchableIndex(highQueue)
     if (index < 0) break
@@ -55,6 +64,12 @@ function pump() {
     if (index < 0) break
     dispatch(lowQueue.splice(index, 1)[0])
   }
+}
+
+function schedulePump() {
+  if (pumpScheduled) return
+  pumpScheduled = true
+  setTimeout(pump, 0)
 }
 
 function acquire(priority, callerSignal, scheduling = {}) {
@@ -93,7 +108,8 @@ function acquire(priority, callerSignal, scheduling = {}) {
 
     queue.push(entry)
     if (!isLow) cancelActiveLow()
-    pump()
+    // 合并同一轮组件挂载产生的请求，让调度器先看到所有子图分组，再按活跃数公平派发。
+    schedulePump()
   })
 }
 
