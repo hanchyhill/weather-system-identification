@@ -9,6 +9,7 @@ import { ref } from 'vue'
 
 import { useScreenshot } from '../composables/useScreenshot'
 import { useWeatherViewContext } from '../context/weatherViewContext'
+import ColorLegend from './ColorLegend.vue'
 import DrawingToolbar from './DrawingToolbar.vue'
 import ElementSelector from './ElementSelector.vue'
 import ForecastSlider from './ForecastSlider.vue'
@@ -56,6 +57,7 @@ const {
   mouseGeo,
   preloading,
   resetView,
+  selectedLayerTypes,
   shellRef,
   showControlRail,
   zoomTransform
@@ -213,6 +215,12 @@ function captureRegionView() {
         {{ formatNumber(mouseGeo.lat, 3) }}N
         <span>k={{ formatNumber(zoomTransform.k, 2) }}</span>
       </div>
+
+      <ColorLegend
+        v-if="!compact"
+        :level="level"
+        :selected-layer-types="selectedLayerTypes"
+      />
 
       <div v-if="preloading" class="preload-indicator">
         <span class="preload-spinner" />

@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+from argparse import Namespace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -16,6 +17,7 @@ from draw.svg_layer_data import (  # noqa: E402
     accumulated_precipitation,
     accumulation_start_hour,
 )
+from draw.svg_layer_geometry import Bounds  # noqa: E402
 from draw.svg_layer_rendering import (  # noqa: E402
     BOUND_VORT,
     CLRMAP_VORT,
@@ -23,6 +25,7 @@ from draw.svg_layer_rendering import (  # noqa: E402
     COLOR_ARR_VORT_LOW,
     preprocess_surface_layer,
 )
+from draw.svg_layer_workflow import generate_surface_layers  # noqa: E402
 
 
 class GenerateSvgLayersTests(unittest.TestCase):
@@ -60,6 +63,7 @@ class GenerateSvgLayersTests(unittest.TestCase):
 
     def test_accumulation_start_hour_requires_both_forecast_endpoints(self):
         self.assertEqual(accumulation_start_hour("024", 24), "000")
+        self.assertEqual(accumulation_start_hour("006", 6), "000")
         self.assertEqual(accumulation_start_hour("078", 24), "054")
         self.assertEqual(accumulation_start_hour("078", 6), "072")
         self.assertIsNone(accumulation_start_hour("078", 3))
@@ -90,6 +94,54 @@ class GenerateSvgLayersTests(unittest.TestCase):
 
         self.assertEqual(result.attrs["units"], "mm")
         self.assertAlmostEqual(float(result.item()), 5.0)
+
+    @patch("draw.svg_layer_workflow._generate_layers")
+    @patch("draw.svg_layer_workflow.open_data_array")
+    def test_first_valid_precipitation_window_uses_end_point_only(self, open_data_mock, generate_mock):
+        endpoint = xr.DataArray(
+            np.array([[0.006]]),
+            dims=("lat", "lon"),
+            attrs={"units": "m"},
+        )
+        open_data_mock.return_value = endpoint
+        loaded_fields = {}
+
+        def load_first_precipitation(*call_args):
+            layer_type = next(layer for layer in call_args[4] if layer.startswith("rain_"))
+            fields, _ = call_args[5](layer_type, None)
+            loaded_fields["layer_type"] = layer_type
+            loaded_fields["precipitation"] = fields["precipitation"]
+            return [fields]
+
+        generate_mock.side_effect = load_first_precipitation
+        args = Namespace(
+            init_time="2026072700",
+            source="ecmwfthin",
+            base_url_template="http://example/{source}/",
+            tppm_path="tppm.nc",
+            tppm_var="tppm{fc_hour}",
+        )
+
+        for fc_hour, layer_type in (("024", "rain_24h_fill"), ("006", "rain_6h_fill")):
+            with self.subTest(fc_hour=fc_hour):
+                open_data_mock.reset_mock()
+                generate_surface_layers(args, fc_hour, Bounds(60, 150, 0, 60))
+
+                self.assertEqual(open_data_mock.call_count, 1)
+                self.assertEqual(loaded_fields["layer_type"], layer_type)
+                self.assertAlmostEqual(float(loaded_fields["precipitation"].item()), 6.0)
+                self.assertNotIn("tppm000", open_data_mock.call_args.args[1])
+
+    @patch("draw.svg_layer_workflow._generate_layers", return_value=[])
+    def test_three_hour_precipitation_is_scheduled_only_for_available_windows(self, generate_mock):
+        args = Namespace(init_time="2026072700")
+        bounds = Bounds(60, 150, 0, 60)
+
+        generate_surface_layers(args, "003", bounds)
+        self.assertIn("rain_3h_fill", generate_mock.call_args.args[4])
+
+        generate_surface_layers(args, "078", bounds)
+        self.assertNotIn("rain_3h_fill", generate_mock.call_args.args[4])
 
     def test_surface_precipitation_preprocessing_keeps_accumulation_field(self):
         precipitation = xr.DataArray(np.array([[12.0]]), dims=("lat", "lon"))

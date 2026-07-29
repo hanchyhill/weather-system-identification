@@ -1,15 +1,16 @@
 <script setup>
-import { CalendarClock } from 'lucide-vue-next'
-import { NPopover } from 'naive-ui'
+import { CalendarClock, CircleAlert } from 'lucide-vue-next'
+import { NPopover, NTooltip } from 'naive-ui'
 import { computed, reactive, ref } from 'vue'
 
 import { useWeatherViewContext } from '../context/weatherViewContext'
 
 const {
   applyInitAndFcHour,
-  DEFAULT_FC_HOURS,
   fcHour,
-  initTime
+  filteredFcHourCount,
+  initTime,
+  sliderFcHours
 } = useWeatherViewContext()
 
 // 起报时次每 12 小时一档，向前追溯的档数（与参考实现一致，共 11 行）。
@@ -18,8 +19,8 @@ const INIT_TIME_ROW_COUNT = 11
 const FUTURE_INIT_OFFSETS = [48, 36, 24, 12]
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-// 预报时效（小时），直接取本项目的 DEFAULT_FC_HOURS，保证时次与后端产品匹配。
-const fcHoursNumeric = DEFAULT_FC_HOURS.map((value) => Number(value))
+// 预报时效随当前层次和图层组合变化；降水缺失的时效不会进入矩阵。
+const fcHoursNumeric = computed(() => sliderFcHours.value.map((value) => Number(value)))
 
 const tableHighlight = reactive({ columnIndex: NaN, rowIndex: NaN })
 
@@ -85,7 +86,7 @@ const timeTableHeader = computed(() => {
   const baseMs = parseInitTimeMs(initTime.value)
   if (baseMs == null) return []
 
-  const firstRowTimes = fcHoursNumeric.map((fc) => baseMs + fc * 60 * 60 * 1000)
+  const firstRowTimes = fcHoursNumeric.value.map((fc) => baseMs + fc * 60 * 60 * 1000)
   const columns = splitByDate(firstRowTimes)
 
   let columnIndex = 0
@@ -115,7 +116,7 @@ const timeTable = computed(() => {
     rawRows.push({
       initMs: rowInitMs,
       isFuture: true,
-      times: fcHoursNumeric.map((fc) => rowInitMs + fc * 60 * 60 * 1000)
+      times: fcHoursNumeric.value.map((fc) => rowInitMs + fc * 60 * 60 * 1000)
     })
   })
   // 当前起报时次及向前追溯的历史时次。
@@ -124,12 +125,12 @@ const timeTable = computed(() => {
     rawRows.push({
       initMs: rowInitMs,
       isFuture: false,
-      times: fcHoursNumeric.map((fc) => rowInitMs + fc * 60 * 60 * 1000)
+      times: fcHoursNumeric.value.map((fc) => rowInitMs + fc * 60 * 60 * 1000)
     })
   }
 
   // 列分组始终以当前起报时次为基准，保证未来/历史行的显示范围都对齐当前起报时次。
-  const baseTimes = fcHoursNumeric.map((fc) => baseMs + fc * 60 * 60 * 1000)
+  const baseTimes = fcHoursNumeric.value.map((fc) => baseMs + fc * 60 * 60 * 1000)
   const firstColumns = splitByDate(baseTimes)
 
   return rawRows.map((row, rowIndex) => {
@@ -141,7 +142,7 @@ const timeTable = computed(() => {
         const info = { columnIndex, rowIndex }
         if (hitIndex !== -1) {
           info.isAvailable = true
-          info.fc = fcHoursNumeric[hitIndex]
+          info.fc = fcHoursNumeric.value[hitIndex]
           info.initMs = row.initMs
           info.validMs = cellMs
         } else {
@@ -202,9 +203,20 @@ function cancelHighlight() {
     <div class="mts-popover">
       <div class="mts-header">
         <strong>多时次选择器</strong>
-        <span>行=起报时次（北京时，含未来 4 档），列=预报有效时刻，绿格可选</span>
+        <span>
+          行=起报时次（北京时，含未来 4 档），列=预报有效时刻，绿格可选
+          <n-tooltip v-if="filteredFcHourCount" trigger="hover">
+            <template #trigger>
+              <CircleAlert class="mts-filter-hint" :size="14" aria-label="存在已过滤的无数据时效" />
+            </template>
+            当前图层组合已过滤 {{ filteredFcHourCount }} 个无数据时效
+          </n-tooltip>
+        </span>
       </div>
-      <div class="mts-table-box">
+      <div v-if="!fcHoursNumeric.length" class="mts-empty">
+        当前图层组合暂无可用预报时效
+      </div>
+      <div v-else class="mts-table-box">
         <table class="mts-table">
           <thead>
             <tr>
@@ -324,9 +336,23 @@ function cancelHighlight() {
   font-size: 12px;
 }
 
+.mts-filter-hint {
+  display: inline-block;
+  margin-left: 4px;
+  vertical-align: -2px;
+  color: #b45309;
+  cursor: help;
+}
+
 .mts-table-box {
   max-width: 90vw;
   overflow: auto;
+}
+
+.mts-empty {
+  padding: 12px 4px;
+  color: #b45309;
+  font-size: 12px;
 }
 
 .mts-table,

@@ -17,6 +17,7 @@ from draw.svg_layer_data import (
     accumulation_start_hour,
     default_path,
     open_data_array,
+    precipitation_amount_mm,
 )
 from draw.svg_layer_geometry import Bounds, Tile, iter_tiles, layer_output_path, tile_levels_for_layer
 from draw.svg_layer_manifest import (
@@ -44,6 +45,7 @@ SURFACE_LAYER_TYPES = (
     "mslp_contour",
     "rain_24h_fill",
     "rain_6h_fill",
+    "rain_3h_fill",
 )
 PRECIPITATION_LAYER_HOURS = {
     "rain_24h_fill": 24,
@@ -160,8 +162,12 @@ def generate_surface_layers(args, fc_hour: str, bounds: Bounds, manifest: dict[s
             if start_fc_hour is None:
                 raise ValueError(f"No valid {accumulation_hours}-hour precipitation window for fc_hour={fc_hour}")
             end_accumulation = read(args.tppm_path, "tppm.nc", args.tppm_var, ("tppm",))
-            start_accumulation = read(args.tppm_path, "tppm.nc", args.tppm_var, ("tppm",), start_fc_hour)
-            return {"precipitation": accumulated_precipitation(end_accumulation, start_accumulation)}, wind
+            if start_fc_hour == "000":
+                precipitation = precipitation_amount_mm(end_accumulation)
+            else:
+                start_accumulation = read(args.tppm_path, "tppm.nc", args.tppm_var, ("tppm",), start_fc_hour)
+                precipitation = accumulated_precipitation(end_accumulation, start_accumulation)
+            return {"precipitation": precipitation}, wind
         wind = wind or (read(args.u10_path, "u10m.nc", args.u10_var, ("u10m", "u10", "10u", "u")), read(args.v10_path, "v10m.nc", args.v10_var, ("v10m", "v10", "10v", "v")))
         return {"wind": wind}, wind
     available_layer_types = tuple(

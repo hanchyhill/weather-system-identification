@@ -694,3 +694,7 @@ web_push 从来没有生效过
 =====================
 参照 @src\test_trough.py， 我现在需要调试 @@src\draw\generate_svg_layers.py  当中的涡度图的绘制。
 主要问题是涡度图的色标设置不合理，请帮我单独抽出涡度绘制的脚本部分，并且指定500hPa, 起报时间为 2026072612，把色标填色有关的属性放置到脚本前面，方便我手动调试参数。
+======================
+@vis_web\src\components\MapWorkspace.vue 前端增加色标显示：
+如果是有填色的图像，在地图右下角显示色标，色标可进行折叠进行显示或者隐藏。 在 @vis_web\src\components\MultiMapWorkspace.vue 不需要显示色标。
+色标可参考 @src\draw\generate_svg_layers.py 具体执行流程

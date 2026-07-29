@@ -472,6 +472,8 @@ export function useWeatherView(initialView = {}) {
     showWarmOnlyTracks,
     showOnlyFutureVortexTracks,
     showOnlyActiveVortexTracks,
+    filteredFcHourCount: store.filteredFcHourCount,
+    sliderFcHours: store.sliderFcHours,
     sliderIndexCount: store.sliderIndexCount,
     sliderOpts,
     markSlider: store.markSlider,

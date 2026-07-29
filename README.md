@@ -165,7 +165,7 @@ uv run python src/draw/generate_svg_layers.py --init-time 2026072812 --overwrite
 uv run python src/draw/generate_svg_layers.py --init-time 2026072812 --fc-hours 000 --overwrite
 ```
 
-可按机器资源增加并行工作进程，例如 `--workers 4`。当前为减少重复风场产品，默认不生成流线图、风场箭头以及 3 小时累计降水图层；风向杆、6/24 小时累计降水和其他图层仍会生成。
+可按机器资源增加并行工作进程，例如 `--workers 4`。当前为减少重复风场产品，默认不生成流线图和风场箭头；风向杆以及 3/6/24 小时累计降水和其他图层会生成（仅在对应起止时效可用时生成）。
 
 ## 配置说明
 

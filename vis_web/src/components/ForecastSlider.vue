@@ -1,5 +1,5 @@
 <script setup>
-import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, CircleAlert } from 'lucide-vue-next'
 import {
   NButton,
   NButtonGroup,
@@ -16,6 +16,7 @@ const {
   fcHourIndex,
   forecastValidTimeLabel,
   getSliderTooltip,
+  filteredFcHourCount,
   markSlider,
   scrollForecastSlider,
   sliderIndexCount,
@@ -27,6 +28,12 @@ const {
   <div class="forecast-slider-row">
     <div class="forecast-slider-actions">
       <span>预报时效</span>
+      <n-tooltip v-if="filteredFcHourCount" trigger="hover">
+        <template #trigger>
+          <CircleAlert class="forecast-slider-filter-hint" :size="15" aria-label="存在已过滤的无数据时效" />
+        </template>
+        当前图层组合已过滤 {{ filteredFcHourCount }} 个无数据时效
+      </n-tooltip>
       <n-button-group size="small">
         <n-tooltip trigger="hover">
           <template #trigger>
@@ -48,17 +55,22 @@ const {
     </div>
     <div class="forecast-slider-container" @wheel="scrollForecastSlider">
       <vue-slider
+        v-if="sliderIndexCount"
         v-model="fcHourIndex"
         v-bind="sliderOpts"
         :tooltip-formatter="getSliderTooltip"
         :marks="markSlider"
         :min="0"
         :max="sliderIndexCount - 1"
+        aria-label="预报时效"
       />
+      <span v-else class="forecast-slider-empty">当前图层组合暂无可用预报时效</span>
     </div>
     <div class="forecast-slider-readout">
-      <strong>+{{ fcHour }} h</strong>
-      <span>{{ forecastValidTimeLabel }} UTC</span>
+      <strong v-if="sliderIndexCount">+{{ fcHour }} h</strong>
+      <strong v-else>暂无时效</strong>
+      <span v-if="sliderIndexCount">{{ forecastValidTimeLabel }} UTC</span>
+      <span v-else>当前组合无可用数据</span>
     </div>
   </div>
 </template>

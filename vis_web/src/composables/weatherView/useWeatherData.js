@@ -59,7 +59,6 @@ export function useWeatherData(store) {
     fcHourIndex,
     sliderFcHours,
     firstAvailableFcHour,
-    manifestFcHourSet,
     layerOptions,
     layerType,
     loadingState,
@@ -123,9 +122,6 @@ export function useWeatherData(store) {
       manifest.value = await fetchJson(`/data/products/${initTime.value}/manifest.json`, 2_000)
       loadingState.manifest = '完成'
       const manifestLevels = (manifest.value.levels || []).map(String)
-      if (manifestFcHourSet.value && !manifestFcHourSet.value.has(fcHour.value)) {
-        fcHour.value = firstAvailableFcHour.value
-      }
       if (!manifestLevels.includes(String(level.value))) {
         const firstLevel = manifest.value.levels?.find((item) => item !== 'surface') || manifest.value.levels?.[0]
         if (firstLevel) level.value = String(firstLevel)
@@ -134,6 +130,9 @@ export function useWeatherData(store) {
         layerType.value = layerOptions.value[0]?.value || layerType.value
       }
       setSelectedLayerTypes(selectedLayerTypes.value)
+      if (sliderFcHours.value.length && !sliderFcHours.value.includes(fcHour.value)) {
+        fcHour.value = firstAvailableFcHour.value
+      }
     } catch (error) {
       loadingState.manifest = '未找到'
       errorMessage.value = `未找到 /data/products/${initTime.value}/manifest.json；仍可查看槽线 JSON。`
@@ -160,6 +159,9 @@ export function useWeatherData(store) {
     cancelPreload()
     activeSvgLayers.value = []
     setSelectedLayerTypes(selectedLayerTypes.value)
+    if (sliderFcHours.value.length && !sliderFcHours.value.includes(fcHour.value)) {
+      fcHour.value = firstAvailableFcHour.value
+    }
     const projection = buildProjection()
     const tileZoom = getTileZoom(zoomTransform.value.k)
     runtime.loadedTileZoom = tileZoom

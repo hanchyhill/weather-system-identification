@@ -31,6 +31,7 @@ import {
   loadSavedLayerCombinations,
   loadSavedMapViews
 } from './helpers'
+import { availableForecastHours } from './forecastAvailability'
 
 // 运行期非响应式共享变量（原文件中的模块级 let）：跨行为模块读写，装配后由各模块直接改写。
 export function createRuntime() {
@@ -211,16 +212,27 @@ export function createWeatherViewStore(initialView = {}) {
     return null
   })
 
-  const firstAvailableFcHour = computed(() => (
-    DEFAULT_FC_HOURS.find((value) => manifestFcHourSet.value?.has(value)) || DEFAULT_FC_HOURS[0]
-  ))
-
   const sliderFcHours = computed(() => {
-    if (!manifestFcHourSet.value) return DEFAULT_FC_HOURS
+    if (!manifest.value) return DEFAULT_FC_HOURS
 
-    const availableHours = DEFAULT_FC_HOURS.filter((value) => manifestFcHourSet.value.has(value))
-    return availableHours.length ? availableHours : DEFAULT_FC_HOURS
+    const availableHours = availableForecastHours(
+      manifest.value,
+      level.value,
+      selectedLayerTypes.value,
+      DEFAULT_FC_HOURS
+    )
+    if (availableHours == null) {
+      return manifestFcHourSet.value
+        ? DEFAULT_FC_HOURS.filter((value) => manifestFcHourSet.value.has(value))
+        : DEFAULT_FC_HOURS
+    }
+    return availableHours
   })
+
+  const firstAvailableFcHour = computed(() => sliderFcHours.value[0] || DEFAULT_FC_HOURS[0])
+  const filteredFcHourCount = computed(() => (
+    manifest.value ? Math.max(0, DEFAULT_FC_HOURS.length - sliderFcHours.value.length) : 0
+  ))
 
   const fcHourIndex = computed({
     get() {
@@ -243,7 +255,7 @@ export function createWeatherViewStore(initialView = {}) {
   })
 
   const fcHourOptions = computed(() => DEFAULT_FC_HOURS.map((value) => {
-    const disabled = Boolean(manifest.value && manifestFcHourSet.value && !manifestFcHourSet.value.has(value))
+    const disabled = Boolean(manifest.value && !sliderFcHours.value.includes(value))
     return {
       label: `+${value} h`,
       value,
@@ -636,6 +648,7 @@ export function createWeatherViewStore(initialView = {}) {
     sliderFcHours,
     fcHourIndex,
     sliderIndexCount,
+    filteredFcHourCount,
     forecastValidTimeLabel,
     forecastValidTimeBjtLabel,
     fcHourOptions,

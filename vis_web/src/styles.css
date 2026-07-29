@@ -377,6 +377,11 @@ input {
   white-space: nowrap;
 }
 
+.forecast-slider-filter-hint {
+  color: #b45309;
+  cursor: help;
+}
+
 .forecast-slider-container {
   min-width: 0;
   padding: 0 4px;
@@ -385,6 +390,14 @@ input {
 
 .forecast-slider-container:hover {
   filter: drop-shadow(0 0 4px rgba(31, 122, 140, 0.28));
+}
+
+.forecast-slider-empty {
+  display: block;
+  padding: 8px 0;
+  color: #b45309;
+  font-size: 12px;
+  text-align: center;
 }
 
 .forecast-slider-readout {

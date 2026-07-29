@@ -35,7 +35,7 @@ def accumulation_start_hour(
 
 def precipitation_amount_mm(precipitation: xr.DataArray) -> xr.DataArray:
     """将累计降水量统一为毫米；tppm 缺少单位属性时默认按米处理。"""
-    values = np.asarray(precipitation.values, dtype=float)
+    values = np.asarray(precipitation.values, dtype=float).copy()
     units = str(precipitation.attrs.get("units", "")).strip().lower()
     if units in {"", "m", "meter", "meters", "metre", "metres"}:
         values *= 1000.0
