@@ -33,6 +33,7 @@ import { useMapRenderer } from './weatherView/useMapRenderer'
 import { useMapDrawings } from './weatherView/useMapDrawings'
 import { useMultiMap } from './weatherView/useMultiMap'
 import { useElementConfig } from './weatherView/useElementConfig'
+import { useMultiMapPopup } from './useMultiMapPopup'
 
 // 天气可视化主 composable：装配核心 store 与各行为模块，集中 watch 与生命周期，
 // 返回与拆分前完全一致的 context（供各组件通过 provide/inject 消费）。
@@ -115,6 +116,54 @@ export function useWeatherView(initialView = {}) {
   const { handleMouseMove, handleMouseLeave, clearHoverState } = renderer
   const { handleDrawKeydown } = drawings
   const { openMultiMap } = multiMap
+
+  const multiMapPopup = useMultiMapPopup({
+    applyInitAndFcHour,
+    initTime,
+    fcHour,
+    level,
+    selectedLayerTypes,
+    projectionName,
+    zoomTransform,
+    multiMapMode,
+    multiMapSyncState,
+    multiMapModeOptions,
+    multiInitInterval,
+    multiInitPanelCount,
+    multiForecastInterval,
+    multiForecastPanelCount,
+    multiElementPanelCount,
+    openMultiMap,
+    mapViewSnapshot: projection.currentMapViewSnapshot,
+    systemControls: {
+      showSvgLayer,
+      showTrough,
+      showColdFronts,
+      showJetAxes,
+      showRawPoints,
+      showVortexCenters,
+      showVortexTracks,
+      showWarmOnlyTracks,
+      showWarmOnlyCenters,
+      showTooltip,
+      showTileDebug,
+      showGraticule,
+      troughMinLength,
+      troughMinWindSpeed,
+      troughLineWidth,
+      jetMinAxisLength,
+      jetMinAvgWindSpeed,
+      jetMinMaxWindSpeed,
+      jetLineWidth,
+      showJetArrowHeads,
+      vortexMinWindSpeed,
+      vortexMinVorticity,
+      vortexTrackMinWindSpeed,
+      showFutureVortexTracks,
+      showOnlyFutureVortexTracks,
+      showOnlyActiveVortexTracks
+    }
+  })
 
   // 切换起报时次时优先保持有效时间不变。新起报缺少对应时效时，保留原预报时效。
   function applyInitTime(nextInitTime) {
@@ -421,6 +470,7 @@ export function useWeatherView(initialView = {}) {
     loadingState: store.loadingState,
     showControlRail,
     multiMapMode,
+    isMultiMapPopup: multiMapPopup.isMultiMapPopup,
     multiMapSyncState,
     multiMapModeOptions,
     multiMapPanels: store.multiMapPanels,
@@ -441,6 +491,7 @@ export function useWeatherView(initialView = {}) {
     multiElementForecastRows: store.multiElementForecastRows,
     mouseGeo: store.mouseGeo,
     openMultiMap,
+    openMultiMapWindow: multiMapPopup.openMultiMapWindow,
     projectionName,
     projectionOptions,
     refreshToLatest,

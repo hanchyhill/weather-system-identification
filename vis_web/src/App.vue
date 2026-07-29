@@ -9,16 +9,28 @@ import { useWeatherView } from './composables/useWeatherView'
 import { WEATHER_VIEW_CONTEXT_KEY } from './context/weatherViewContext'
 
 const weatherView = useWeatherView()
+const isMultiMapPopup = weatherView.isMultiMapPopup
 
 provide(WEATHER_VIEW_CONTEXT_KEY, weatherView)
 </script>
 
 <template>
   <n-config-provider>
-    <main class="app-shell" :class="{ 'app-shell--rail-hidden': !weatherView.showControlRail.value }">
-      <ControlRail v-show="weatherView.showControlRail.value" />
-      <MultiMapWorkspace v-show="weatherView.multiMapMode.value" />
-      <MapWorkspace v-show="!weatherView.multiMapMode.value" />
+    <main
+      class="app-shell"
+      :class="{
+        'app-shell--rail-hidden': !weatherView.showControlRail.value,
+        'app-shell--multi-map-popup': isMultiMapPopup
+      }"
+    >
+      <template v-if="isMultiMapPopup">
+        <MultiMapWorkspace />
+      </template>
+      <template v-else>
+        <ControlRail v-show="weatherView.showControlRail.value" />
+        <MultiMapWorkspace v-show="weatherView.multiMapMode.value" />
+        <MapWorkspace v-show="!weatherView.multiMapMode.value" />
+      </template>
     </main>
   </n-config-provider>
 </template>

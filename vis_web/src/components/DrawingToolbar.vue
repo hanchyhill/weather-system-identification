@@ -9,29 +9,31 @@ const props = defineProps({
   viewContext: {
     type: Object,
     default: null
+  },
+  selectionHandler: {
+    type: Function,
+    default: null
+  },
+  exitHandler: {
+    type: Function,
+    default: null
   }
 })
 
-const viewContext = props.viewContext || useWeatherViewContext()
-
-const {
-  DRAW_TOOLS,
-  drawMode,
-  activeDrawTool,
-  setDrawTool,
-  exitDrawMode,
-  finishCurrentLine,
-  undoDrawing,
-  clearDrawings,
-  hasDrawings,
-  draftPointCount
-} = viewContext
+// 多图模式会在不同子图之间切换 viewContext，不能在 setup 时解构为固定的第一张图。
+const fallbackViewContext = props.viewContext || useWeatherViewContext()
+const viewContext = computed(() => props.viewContext || fallbackViewContext)
+const DRAW_TOOLS = computed(() => viewContext.value.DRAW_TOOLS)
+const drawMode = computed(() => viewContext.value.drawMode.value)
+const activeDrawTool = computed(() => viewContext.value.activeDrawTool.value)
+const hasDrawings = computed(() => viewContext.value.hasDrawings.value)
+const draftPointCount = computed(() => viewContext.value.draftPointCount.value)
 
 const show = ref(false)
 
-const geomTools = computed(() => DRAW_TOOLS.filter((tool) => tool.group === 'geom'))
-const lineTools = computed(() => DRAW_TOOLS.filter((tool) => tool.group === 'line'))
-const labelTools = computed(() => DRAW_TOOLS.filter((tool) => tool.group === 'label'))
+const geomTools = computed(() => DRAW_TOOLS.value.filter((tool) => tool.group === 'geom'))
+const lineTools = computed(() => DRAW_TOOLS.value.filter((tool) => tool.group === 'line'))
+const labelTools = computed(() => DRAW_TOOLS.value.filter((tool) => tool.group === 'label'))
 
 // 线类型：预览小图（swatch）的样式，直观区分槽线/切变线/辐合线等。
 function swatchStyle(tool) {
@@ -47,11 +49,30 @@ function toggle() {
 }
 
 function pick(tool) {
-  setDrawTool(tool.key)
+  if (props.selectionHandler) props.selectionHandler(tool.key)
+  else viewContext.value.setDrawTool(tool.key)
 }
 
 function pickErase() {
-  setDrawTool('erase')
+  if (props.selectionHandler) props.selectionHandler('erase')
+  else viewContext.value.setDrawTool('erase')
+}
+
+function exitDrawMode() {
+  if (props.exitHandler) props.exitHandler()
+  else viewContext.value.exitDrawMode()
+}
+
+function finishCurrentLine() {
+  viewContext.value.finishCurrentLine()
+}
+
+function undoDrawing() {
+  viewContext.value.undoDrawing()
+}
+
+function clearDrawings() {
+  viewContext.value.clearDrawings()
 }
 </script>
 

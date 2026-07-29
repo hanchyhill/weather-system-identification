@@ -39,6 +39,16 @@ input {
   grid-column: 2;
 }
 
+/* 独立多图窗口不渲染左侧识别面板，工作区从窗口左缘开始铺满。
+   与上面的 grid-column: 2 特异性相同，必须写在其后才能覆盖。 */
+.app-shell--multi-map-popup {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app-shell--multi-map-popup > .multi-map-workspace {
+  grid-column: 1;
+}
+
 .control-rail {
   display: flex;
   flex-direction: column;

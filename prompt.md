@@ -718,3 +718,6 @@ web_push 从来没有生效过
 ============
 把 @vis_web\src\components\ControlRail.vue 当中的init-time-control 的功能，移植到 @vis_web\src\components\MapWorkspace.vue 的toolbar 当中。并增加以下行为：
 切换起报时次时，保持真实时间一致。比如当前起报时次是 2026年7月28日12时 UTC, 预报时效 72h, 当切换到起报时次是 2026年7月28日00时 UTC， 预报时效对应增加12个小时，变为 84h， 这样保持真实时间一致。如果切换起报时次后没有对应完全一致的真实时间，则保持相同预报时效即可。
+===================
+
+/goal 增加多屏模式的独立视窗功能，右键单击多图模式当中的相关按钮，把多图模式 @vis_web\src\components\MultiMapWorkspace.vue 当中的内容，作为一个独立弹窗出现，方便拥有两个显示器的用户查看内容。 同时在主视图 @MapWorkspace.vue 当中的操作，能够联动到 多图模式的独立弹窗当中，比如预报时效切换，要素切换等，实现窗口联动。

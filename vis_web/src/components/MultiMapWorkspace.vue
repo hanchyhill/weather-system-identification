@@ -1,7 +1,7 @@
 <script setup>
 import { Camera, ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Save, Settings, Trash2, X } from 'lucide-vue-next'
 import { NButton, NButtonGroup, NInput, NModal, NPopover, NSelect, NTooltip } from 'naive-ui'
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 
 import { useScreenshot } from '../composables/useScreenshot'
 import { useWeatherViewContext } from '../context/weatherViewContext'
@@ -65,7 +65,8 @@ const {
   level,
   selectedLayerTypes,
   activeElementKey: globalActiveElementKey,
-  showControlRail
+  showControlRail,
+  isMultiMapPopup
 } = useWeatherViewContext()
 
 const modeLabel = computed(() => (
@@ -153,7 +154,9 @@ const panelLoadConcurrency = computed(() => (
 // 所有子图使用同一同步对象；它在进入多图时继承单图视角，并在模式切换时保持第一张图的视角。
 const syncState = multiMapSyncState
 const panelViewContexts = new Map()
-const activePanelViewContext = ref(null)
+// 子图上下文内包含大量 Ref；必须浅存储，避免 Vue 代理自动解包其字段。
+const activePanelViewContext = shallowRef(null)
+const activeMultiMapDrawTool = ref(null)
 
 // 多图截图：分别读取各子图 canvas，按屏幕上的网格布局合成到一张大图，
 // 并将各子图的标题文字额外绘制到对应表头区域（避免 canvas 与 DOM 混合栅格化的复杂性）。
@@ -279,6 +282,10 @@ function resetSyncState() {
 }
 
 function close() {
+  if (isMultiMapPopup) {
+    window.close()
+    return
+  }
   const snapshot = syncState.zoom ? { ...syncState.zoom } : null
   if (snapshot) applyMapView(snapshot)
   resetSyncState()
@@ -287,7 +294,11 @@ function close() {
 
 function activateElementPanel(index) {
   activeElementPanelIndex.value = index
-  activePanelViewContext.value = panelViewContexts.get(index) || null
+  const viewContext = panelViewContexts.get(index) || null
+  activePanelViewContext.value = viewContext
+  if (viewContext && activeMultiMapDrawTool.value && viewContext.activeDrawTool.value !== activeMultiMapDrawTool.value) {
+    viewContext.setDrawTool(activeMultiMapDrawTool.value)
+  }
 }
 
 function activateElementSetting(index) {
@@ -322,7 +333,32 @@ function syncFirstPanelTimeBase() {
 
 function registerPanelViewContext(index, viewContext) {
   panelViewContexts.set(index, viewContext)
+  if (activeMultiMapDrawTool.value && viewContext.activeDrawTool.value !== activeMultiMapDrawTool.value) {
+    viewContext.setDrawTool(activeMultiMapDrawTool.value)
+  }
   if (index === activeElementPanelIndex.value) activePanelViewContext.value = viewContext
+}
+
+// 多图共用一个“当前工具”：选中后所有已就绪子图都进入相同绘图状态，
+// 新挂载的子图则由 registerPanelViewContext 继承，切图时无需重新点工具栏。
+function setMultiMapDrawTool(toolKey) {
+  if (activeMultiMapDrawTool.value === toolKey) {
+    exitMultiMapDrawMode()
+    return
+  }
+  activeMultiMapDrawTool.value = toolKey
+  panelViewContexts.forEach((viewContext) => {
+    if (viewContext.activeDrawTool.value !== toolKey) viewContext.setDrawTool(toolKey)
+  })
+}
+
+function exitMultiMapDrawMode() {
+  activeMultiMapDrawTool.value = null
+  panelViewContexts.forEach((viewContext) => viewContext.exitDrawMode())
+}
+
+function handleMultiMapDrawingKeydown(event) {
+  if (event.key === 'Escape') activeMultiMapDrawTool.value = null
 }
 
 function applyMultiMapView(view) {
@@ -401,12 +437,16 @@ watch(multiMapMode, (mode) => {
 })
 
 watch(multiMapPanels, (panels) => {
+  exitMultiMapDrawMode()
   panelViewContexts.clear()
   activePanelViewContext.value = null
   if (activeElementPanelIndex.value >= panels.length) {
     activeElementPanelIndex.value = Math.max(0, panels.length - 1)
   }
 })
+
+onMounted(() => window.addEventListener('keydown', handleMultiMapDrawingKeydown))
+onUnmounted(() => window.removeEventListener('keydown', handleMultiMapDrawingKeydown))
 </script>
 
 <template>
@@ -716,7 +756,12 @@ watch(multiMapPanels, (panels) => {
       />
       <MultiMapSelector />
       <MapViewSelector :apply-view="applyMultiMapView" :save-view="saveMultiMapView" />
-      <DrawingToolbar v-if="activePanelViewContext" :view-context="activePanelViewContext" />
+      <DrawingToolbar
+        v-if="activePanelViewContext"
+        :view-context="activePanelViewContext"
+        :selection-handler="setMultiMapDrawTool"
+        :exit-handler="exitMultiMapDrawMode"
+      />
       <n-tooltip trigger="hover" placement="right">
         <template #trigger>
           <button

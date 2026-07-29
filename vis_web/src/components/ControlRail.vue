@@ -4,6 +4,7 @@ import {
   NButton,
   NCheckbox,
   NCheckboxGroup,
+  NInput,
   NInputNumber,
   NPopover,
   NSelect,
