@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import time
+from errno import EACCES, EBUSY
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
+from uuid import uuid4
 
 from draw.svg_layer_config import TILE_SCHEME
 from draw.svg_layer_geometry import Bounds, Tile, tile_bounds, tile_levels_for_layer, tile_scheme_manifest
@@ -163,12 +167,39 @@ def backfill_manifest_from_existing_svgs(output_root: Path, init_time: str, boun
     return backfilled
 
 
+_REPLACE_RETRY_DELAYS_SECONDS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
+
+
+def _replace_with_retry(temporary_path: Path, path: Path) -> None:
+    """替换可能被 Windows 短暂占用的产品文件。"""
+    for delay in (*_REPLACE_RETRY_DELAYS_SECONDS, None):
+        try:
+            os.replace(temporary_path, path)
+            return
+        except OSError as exc:
+            if exc.errno not in (EACCES, EBUSY) or delay is None:
+                raise
+            time.sleep(delay)
+
+
 def write_json_atomic(path: Path, payload: dict[str, object]) -> Path:
-    import os
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_name(f"{path.name}.tmp.{os.getpid()}")
-    temporary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary_path.replace(path)
+    temporary_path = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid4().hex}")
+    serialized_payload = json.dumps(payload, ensure_ascii=False, indent=2)
+    try:
+        temporary_path.write_text(serialized_payload, encoding="utf-8")
+        try:
+            _replace_with_retry(temporary_path, path)
+        except PermissionError:
+            if os.name != "nt":
+                raise
+            # Windows 读取方可能允许写入、但未允许删除共享，导致 os.replace
+            # 即使重试后仍被拒绝。此时宁可原位更新，也不能让整批生成失败。
+            print(f"JSON output remained locked after atomic replace retries; writing in place: {path}", flush=True)
+            path.write_text(serialized_payload, encoding="utf-8")
+    finally:
+        # replace 成功后临时文件已不存在；失败时不遗留中间文件。
+        temporary_path.unlink(missing_ok=True)
     return path
 
 

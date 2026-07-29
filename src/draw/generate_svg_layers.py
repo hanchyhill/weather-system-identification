@@ -103,7 +103,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=default_worker_count(), help="Parallel worker process count.")
     parser.add_argument("--data-workers", "--max-remote-workers", dest="data_workers", type=int, help="Maximum concurrent data-reading workers.")
     parser.add_argument("--schedule", choices=("fc-hour", "product"), default="fc-hour", help="Parallel scheduling unit.")
-    parser.add_argument("--manifest-checkpoint-interval", type=int, default=1, help="Write manifest after every N jobs.")
+    parser.add_argument("--manifest-checkpoint-interval", type=int, default=10, help="Write manifest after every N jobs (default: 10).")
     parser.add_argument("--no-backfill", action="store_true", help="Skip startup scan of existing SVG files.")
     parser.add_argument("--verbose-tiles", action="store_true", help="Print one log line per tile.")
     parser.add_argument("--dpi", type=int, default=150)

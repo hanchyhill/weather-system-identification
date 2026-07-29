@@ -18,6 +18,7 @@ from draw.svg_layer_data import (  # noqa: E402
     accumulation_start_hour,
 )
 from draw.svg_layer_geometry import Bounds  # noqa: E402
+from draw.svg_layer_manifest import write_json_atomic  # noqa: E402
 from draw.svg_layer_rendering import (  # noqa: E402
     BOUND_VORT,
     CLRMAP_VORT,
@@ -161,6 +162,38 @@ class GenerateSvgLayersTests(unittest.TestCase):
         self.assertAlmostEqual(float(BOUND_VORT[-1]), 1.0)
         self.assertEqual(COLOR_ARR_VORT[:4], COLOR_ARR_VORT_LOW)
         self.assertEqual(tuple(CLRMAP_VORT.get_under()), (1.0, 1.0, 1.0, 0.0))
+
+    @patch("draw.svg_layer_manifest.time.sleep")
+    @patch("draw.svg_layer_manifest.os.replace")
+    def test_atomic_json_write_retries_temporary_windows_file_lock(self, replace_mock, sleep_mock):
+        replace_mock.side_effect = [PermissionError(13, "Permission denied"), None]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "manifest.json"
+            self.assertEqual(write_json_atomic(path, {"status": "ok"}), path)
+
+            temporary_path, target_path = replace_mock.call_args.args
+            self.assertEqual(target_path, path)
+            self.assertFalse(temporary_path.exists())
+
+        self.assertEqual(replace_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(0.05)
+
+    @patch("draw.svg_layer_manifest.os.name", "nt")
+    @patch("draw.svg_layer_manifest.time.sleep")
+    @patch("draw.svg_layer_manifest.os.replace", side_effect=PermissionError(13, "Permission denied"))
+    def test_atomic_json_write_falls_back_to_in_place_write_for_persistent_windows_lock(self, replace_mock, sleep_mock):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "manifest.json"
+            path.write_text('{"status": "old"}', encoding="utf-8")
+
+            self.assertEqual(write_json_atomic(path, {"status": "new"}), path)
+
+            self.assertEqual(path.read_text(encoding="utf-8"), '{\n  "status": "new"\n}')
+            self.assertFalse(list(path.parent.glob("manifest.json.tmp.*")))
+
+        self.assertEqual(replace_mock.call_count, 7)
+        self.assertEqual(sleep_mock.call_count, 6)
 
 if __name__ == "__main__":
     unittest.main()
