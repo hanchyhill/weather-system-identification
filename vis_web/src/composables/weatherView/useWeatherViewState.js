@@ -66,6 +66,8 @@ export function createWeatherViewStore(initialView = {}) {
     ? initialView.selectedLayerTypes.map(String)
     : ['wind_barb']
   const compactView = Boolean(initialView.compact)
+  // 多图子图复用主视图的天气系统开关和筛选阈值，使左侧识别面板的设置立即作用于全部子图。
+  const sharedControl = (name, fallback) => initialView.systemControls?.[name] || fallback
   // 多图子图专用预加载目标：由父级（MultiMapWorkspace 所在实例）在构造 panel 描述符时给出，
   // 内容为“本子图在相邻页/相邻时效切换后会用到的预报时效列表”。为空时不进行邻近预加载。
   const compactPreloadFcHours = Array.isArray(initialView.preloadFcHours)
@@ -110,7 +112,7 @@ export function createWeatherViewStore(initialView = {}) {
   // 在多图模式之间切换时则保留第一张子图当前的视角。
   const multiMapSyncState = reactive({ cursor: null, zoom: null })
   // 左侧「天气系统识别」控制面板的显隐（由地图上的按钮 toggle）
-  const showControlRail = ref(true)
+  const showControlRail = sharedControl('showControlRail', ref(true))
   const multiMapPanels = ref([])
   const multiInitInterval = ref('12')
   const multiInitPanelCount = ref(4)
@@ -129,38 +131,38 @@ export function createWeatherViewStore(initialView = {}) {
   const coldFrontData = ref(null)
   const vortexCenters = ref([])
   const vortexTracks = ref(null)
-  const showSvgLayer = ref(true)
-  const showTrough = ref(true)
-  const showJetAxes = ref(false)
-  const showColdFronts = ref(true)
-  const showRawPoints = ref(false)
-  const showVortexCenters = ref(true)
-  const showVortexTracks = ref(true)
-  const showWarmOnlyTracks = ref(true)
-  const showWarmOnlyCenters = ref(false)
-  const showTooltip = ref(true)
-  const showTileDebug = ref(false)
+  const showSvgLayer = sharedControl('showSvgLayer', ref(true))
+  const showTrough = sharedControl('showTrough', ref(true))
+  const showJetAxes = sharedControl('showJetAxes', ref(false))
+  const showColdFronts = sharedControl('showColdFronts', ref(true))
+  const showRawPoints = sharedControl('showRawPoints', ref(false))
+  const showVortexCenters = sharedControl('showVortexCenters', ref(true))
+  const showVortexTracks = sharedControl('showVortexTracks', ref(true))
+  const showWarmOnlyTracks = sharedControl('showWarmOnlyTracks', ref(true))
+  const showWarmOnlyCenters = sharedControl('showWarmOnlyCenters', ref(false))
+  const showTooltip = sharedControl('showTooltip', ref(true))
+  const showTileDebug = sharedControl('showTileDebug', ref(false))
   // 经纬度坐标轴与网格：单图（compact=false）默认开启，多图子图（compact=true）默认关闭；
   // initialView 可显式覆盖。
-  const showGraticule = ref(initialView.showGraticule ?? !compactView)
+  const showGraticule = sharedControl('showGraticule', ref(initialView.showGraticule ?? !compactView))
   const activeSystemTab = ref('trough')
-  const troughMinLength = ref(0)
-  const troughMinWindSpeed = ref(3.0)
-  const troughLineWidth = ref(2.0)
-  const troughShearFiltersByLevel = reactive({})
+  const troughMinLength = sharedControl('troughMinLength', ref(0))
+  const troughMinWindSpeed = sharedControl('troughMinWindSpeed', ref(3.0))
+  const troughLineWidth = sharedControl('troughLineWidth', ref(2.0))
+  const troughShearFiltersByLevel = sharedControl('troughShearFiltersByLevel', reactive({}))
 
-  const jetMinAxisLength = ref(6.5)
-  const jetMinAvgWindSpeed = ref(6)
-  const jetMinMaxWindSpeed = ref(0)
-  const jetLineWidth = ref(2.2)
-  const showJetArrowHeads = ref(true)
-  const vortexMinWindSpeed = ref(0)
-  const vortexMinVorticity = ref(0.00006)
-  const vortexTrackMinWindSpeed = ref(0)
-  const showFutureVortexTracks = ref(true)
-  const showOnlyFutureVortexTracks = ref(true)
+  const jetMinAxisLength = sharedControl('jetMinAxisLength', ref(6.5))
+  const jetMinAvgWindSpeed = sharedControl('jetMinAvgWindSpeed', ref(6))
+  const jetMinMaxWindSpeed = sharedControl('jetMinMaxWindSpeed', ref(0))
+  const jetLineWidth = sharedControl('jetLineWidth', ref(2.2))
+  const showJetArrowHeads = sharedControl('showJetArrowHeads', ref(true))
+  const vortexMinWindSpeed = sharedControl('vortexMinWindSpeed', ref(0))
+  const vortexMinVorticity = sharedControl('vortexMinVorticity', ref(0.00006))
+  const vortexTrackMinWindSpeed = sharedControl('vortexTrackMinWindSpeed', ref(0))
+  const showFutureVortexTracks = sharedControl('showFutureVortexTracks', ref(true))
+  const showOnlyFutureVortexTracks = sharedControl('showOnlyFutureVortexTracks', ref(true))
   // 仅显示“当前时效落在轨迹时间区间内”的轨迹（初始时效≤当前时效 且 结束时效≥当前时效）
-  const showOnlyActiveVortexTracks = ref(true)
+  const showOnlyActiveVortexTracks = sharedControl('showOnlyActiveVortexTracks', ref(true))
   const showHistoricalVortexTracks = computed({
     get: () => !showOnlyFutureVortexTracks.value,
     set: (value) => {

@@ -27,6 +27,7 @@ export function useMultiMap(store) {
     activeElementKey,
     elementConfig,
     multiMapMode,
+    showControlRail,
     multiMapSyncState,
     multiMapPanels,
     multiInitInterval,
@@ -605,6 +606,8 @@ export function useMultiMap(store) {
   function openMultiMap(mode) {
     if (!multiMapModeOptions.some((option) => option.value === mode)) return
     const isModeChange = multiMapMode.value !== mode
+    // 从单图进入多图时先收起识别面板，避免压缩默认的多图对比视野；多图内部切换不改变用户选择。
+    if (!multiMapMode.value) showControlRail.value = false
     initializeMultiMapView(isModeChange)
 
     // 该矩阵模式默认以 4 个起报行和 4 个预报时效列打开；

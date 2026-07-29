@@ -507,7 +507,8 @@ input {
 /* 多图工具与单图保持同一左侧悬浮位置；其中的选择器均以第一张图/当前选中子图为准。 */
 .multi-map-floating-controls {
   position: absolute;
-  top: 140px;
+  /* 顶部 48px 标题栏 + 78px 时效滑块 + 38px 子图标题栏，再留出 14px 间距。 */
+  top: 178px;
   left: 14px;
   z-index: 8;
   display: grid;

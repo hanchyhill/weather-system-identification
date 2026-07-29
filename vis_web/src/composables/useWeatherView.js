@@ -496,6 +496,7 @@ export function useWeatherView(initialView = {}) {
     markSlider: store.markSlider,
     systemTabs,
     troughLineWidth,
+    troughShearFiltersByLevel: store.troughShearFiltersByLevel,
     troughMinLength,
     troughMinWindSpeed,
     troughShearFilters,

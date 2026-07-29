@@ -1,5 +1,5 @@
 <script setup>
-import { Camera, ChevronLeft, ChevronRight, Pencil, Plus, Save, Settings, Trash2, X } from 'lucide-vue-next'
+import { Camera, ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Save, Settings, Trash2, X } from 'lucide-vue-next'
 import { NButton, NButtonGroup, NInput, NModal, NPopover, NSelect, NTooltip } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
 
@@ -64,7 +64,8 @@ const {
   updateMultiElementForecastPanel,
   level,
   selectedLayerTypes,
-  activeElementKey: globalActiveElementKey
+  activeElementKey: globalActiveElementKey,
+  showControlRail
 } = useWeatherViewContext()
 
 const modeLabel = computed(() => (
@@ -126,6 +127,13 @@ const gridStyle = computed(() => {
     return {
       '--multi-map-columns': comparisonColumnCount.value,
       '--multi-map-rows': Math.ceil(count / comparisonColumnCount.value),
+      '--multi-map-panel-count': count
+    }
+  }
+  if (isInitForecastMode.value) {
+    return {
+      '--multi-map-columns': multiForecastPanelCount.value,
+      '--multi-map-rows': multiInitPanelCount.value,
       '--multi-map-panel-count': count
     }
   }
@@ -324,6 +332,10 @@ function applyMultiMapView(view) {
 function saveMultiMapView(name) {
   if (!syncState.zoom) return false
   return saveMapView(name, syncState.zoom)
+}
+
+function toggleControlRail() {
+  showControlRail.value = !showControlRail.value
 }
 
 function selectMultiElementConfiguration(configuration) {
@@ -705,6 +717,21 @@ watch(multiMapPanels, (panels) => {
       <MultiMapSelector />
       <MapViewSelector :apply-view="applyMultiMapView" :save-view="saveMultiMapView" />
       <DrawingToolbar v-if="activePanelViewContext" :view-context="activePanelViewContext" />
+      <n-tooltip trigger="hover" placement="right">
+        <template #trigger>
+          <button
+            type="button"
+            class="panel-toggle-fab"
+            :class="{ 'panel-toggle-fab-active': !showControlRail }"
+            :aria-label="showControlRail ? '隐藏识别面板' : '显示识别面板'"
+            @click="toggleControlRail"
+          >
+            <PanelLeftClose v-if="showControlRail" :size="20" />
+            <PanelLeftOpen v-else :size="20" />
+          </button>
+        </template>
+        {{ showControlRail ? '隐藏天气系统识别面板' : '显示天气系统识别面板' }}
+      </n-tooltip>
     </aside>
 
     <div ref="gridRef" class="multi-map-grid" :style="gridStyle">

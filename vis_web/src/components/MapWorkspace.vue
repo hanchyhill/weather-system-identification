@@ -4,7 +4,7 @@ import {
 } from 'lucide-vue-next'
 import {
   NButton,
-  NInput,
+  NDatePicker,
   NPopover,
   NTooltip
 } from 'naive-ui'
@@ -70,13 +70,18 @@ const {
 } = viewContext
 
 const initTimeInput = ref(initTime.value)
+const initTimePickerProps = {
+  hours: [0, 12],
+  minutes: [0],
+  seconds: [0]
+}
 
 watch(initTime, (value) => {
   initTimeInput.value = value
 })
 
-function applyInitTimeInput() {
-  if (!applyInitTime(initTimeInput.value)) initTimeInput.value = initTime.value
+function applyInitTimeInput(_, formattedValue) {
+  if (!formattedValue || !applyInitTime(formattedValue)) initTimeInput.value = initTime.value
 }
 
 // 截图工具：范围/剪贴板/下载逻辑封装在 useScreenshot 中，按面板独立运行。
@@ -120,12 +125,18 @@ function captureRegionView() {
         <span>{{ level === 'surface' ? '地面' : `${level} hPa` }}</span>
       </div>
       <div v-else class="init-time-control">
-        <n-input
-          v-model:value="initTimeInput"
+        <n-date-picker
+          v-model:formatted-value="initTimeInput"
+          type="datetime"
+          value-format="yyyyMMddHH"
+          format="yyyy-MM-dd HH 'UTC'"
+          time-picker-format="HH"
+          :time-picker-props="initTimePickerProps"
+          :actions="['confirm']"
+          input-readonly
           size="small"
           aria-label="起报时次"
-          @blur="applyInitTimeInput"
-          @keyup.enter="applyInitTimeInput"
+          @confirm="applyInitTimeInput"
         />
         <n-tooltip trigger="hover">
           <template #trigger>
@@ -327,6 +338,11 @@ function captureRegionView() {
   align-items: center;
   gap: 6px;
   overflow: visible;
+}
+
+.toolbar > .init-time-control :deep(.n-date-picker) {
+  flex: 0 1 172px;
+  min-width: 0;
 }
 
 .toolbar-actions {

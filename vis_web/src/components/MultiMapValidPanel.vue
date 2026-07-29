@@ -2,6 +2,7 @@
 import { onMounted } from 'vue'
 
 import { useWeatherView } from '../composables/useWeatherView'
+import { useWeatherViewContext } from '../context/weatherViewContext'
 import MapWorkspace from './MapWorkspace.vue'
 
 const props = defineProps({
@@ -13,7 +14,12 @@ const props = defineProps({
 
 const emit = defineEmits(['ready'])
 
-const viewContext = useWeatherView({ ...props.panel, compact: true })
+const rootViewContext = useWeatherViewContext()
+const viewContext = useWeatherView({
+  ...props.panel,
+  compact: true,
+  systemControls: rootViewContext
+})
 
 onMounted(() => emit('ready', viewContext))
 </script>
