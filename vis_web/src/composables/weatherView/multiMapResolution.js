@@ -20,6 +20,15 @@ export function multiMapSizeFactor(size = {}) {
   )
 }
 
+// 多图的同一 k 会显示在更小的物理面积上。按子图相对单图的线性尺寸折算有效
+// 放大系数，可使风羽等按瓦片密度绘制的图层在单图、多图之间保持接近的视觉疏密度。
+export function tileZoomForView(k, compact = false, canvasSize = null) {
+  const effectiveZoom = compact ? k * multiMapSizeFactor(canvasSize) : k
+  if (effectiveZoom <= 5) return 0
+  if (effectiveZoom <= 8) return 1
+  return 2
+}
+
 function quantizeUp(value, steps) {
   return steps.find((step) => value <= step) ?? steps[steps.length - 1]
 }

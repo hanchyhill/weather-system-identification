@@ -235,7 +235,7 @@ export function useWeatherData(store) {
         fcHour.value = firstAvailableFcHour.value
       }
       const projection = buildProjection()
-      const tileZoom = getTileZoom(zoomTransform.value.k)
+      const tileZoom = getTileZoom(zoomTransform.value.k, compactView, canvasSize)
       runtime.loadedTileZoom = tileZoom
       const renderScale = renderScaleForZoom(zoomTransform.value.k, compactView, canvasSize)
       runtime.loadedRenderScale = renderScale
@@ -279,7 +279,10 @@ export function useWeatherData(store) {
           ? `${activeSvgLayers.value.length}层完成 / ${missingCount}层缺失`
           : `${activeSvgLayers.value.length}层完成`
         // 加载期间若布局跨过了分辨率档位，立即按最新尺寸补一次，避免保留旧尺寸位图。
-        if (renderScale !== renderScaleForZoom(zoomTransform.value.k, compactView, canvasSize)) {
+        if (
+          tileZoom !== getTileZoom(zoomTransform.value.k, compactView, canvasSize)
+          || renderScale !== renderScaleForZoom(zoomTransform.value.k, compactView, canvasSize)
+        ) {
           loadActiveLayer()
           return
         }
@@ -340,7 +343,7 @@ export function useWeatherData(store) {
   async function loadVisibleTileDelta() {
     const loadId = ++runtime.visibleTileLoadId
     const projection = buildProjection()
-    const desiredZ = runtime.loadedTileZoom ?? getTileZoom(zoomTransform.value.k)
+    const desiredZ = runtime.loadedTileZoom ?? getTileZoom(zoomTransform.value.k, compactView, canvasSize)
     const renderScale = runtime.loadedRenderScale
     const additions = await Promise.all(activeSvgLayers.value.map(async (layer) => {
       if (!Array.isArray(layer.tiles) || !hasTiles(layer.record)) return null
@@ -424,7 +427,7 @@ export function useWeatherData(store) {
   function collectPreloadUrls(targetFcHour) {
     if (!manifest.value) return []
     const projection = buildProjection()
-    const desiredZ = runtime.loadedTileZoom ?? getTileZoom(zoomTransform.value.k)
+    const desiredZ = runtime.loadedTileZoom ?? getTileZoom(zoomTransform.value.k, compactView, canvasSize)
     const urls = []
 
     for (const type of selectedLayerTypes.value) {

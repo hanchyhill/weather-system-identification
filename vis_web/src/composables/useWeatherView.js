@@ -281,8 +281,9 @@ export function useWeatherView(initialView = {}) {
     () => [canvasSize.width, canvasSize.height],
     () => {
       if (!compactView || !activeSvgLayers.value.length) return
+      const nextTileZoom = getTileZoom(zoomTransform.value.k, true, canvasSize)
       const nextRenderScale = renderScaleForZoom(zoomTransform.value.k, true, canvasSize)
-      if (nextRenderScale === runtime.loadedRenderScale) return
+      if (nextTileZoom === runtime.loadedTileZoom && nextRenderScale === runtime.loadedRenderScale) return
       if (runtime.resolutionReloadTimer) clearTimeout(runtime.resolutionReloadTimer)
       runtime.resolutionReloadTimer = setTimeout(() => {
         runtime.resolutionReloadTimer = null
@@ -358,7 +359,7 @@ export function useWeatherView(initialView = {}) {
             source: syncId
           }
         }
-        const nextTileZoom = getTileZoom(event.transform.k)
+        const nextTileZoom = getTileZoom(event.transform.k, compactView, canvasSize)
         const nextRenderScale = renderScaleForZoom(event.transform.k, compactView, canvasSize)
         const tileZoomChanged = selectedLayerHasTiles() && nextTileZoom !== runtime.loadedTileZoom
         const renderScaleChanged = nextRenderScale !== runtime.loadedRenderScale && activeSvgLayers.value.length > 0

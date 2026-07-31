@@ -519,7 +519,7 @@ export function useMapRenderer(store) {
     context.strokeRect(0.5, 0.5, canvasSize.width - 1, canvasSize.height - 1)
 
     if (showTileDebug.value) {
-      const z = getTileZoom(zoomTransform.value.k)
+      const z = getTileZoom(zoomTransform.value.k, compactView, canvasSize)
       const actualZoomItems = activeSvgLayers.value
         .filter((layer) => Number.isFinite(layer.z))
         .map((layer) => `${layer.type}:z${layer.z}`)

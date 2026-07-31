@@ -1,0 +1,456 @@
+diff --git a/vis_web/public/sw.js b/vis_web/public/sw.js
+index 863835e..20b3a66 100644
+--- a/vis_web/public/sw.js
++++ b/vis_web/public/sw.js
+@@ -18,6 +18,7 @@ const MANIFEST_CACHE = 'weather-manifests-v2'
+ const DATA_PREFIX = '/data/'
+ const PRODUCT_PREFIX = '/data/products/'
+ const MANIFEST_RE = /\/data\/products\/[^/]+\/manifest\.json$/
++const PRODUCT_SVG_RE = /\/data\/products\/[^/]+\/.+\.svg$/i
+ const PREFETCH_CONCURRENCY = 2
+ const STORAGE_SOFT_LIMIT_RATIO = 0.6
+ const FOREGROUND_IDLE_MS = 2000
+@@ -29,6 +30,8 @@ let resumeTimer = null
+ let broadcastTimer = null
+ let lastBroadcast = 0
+ let downloadDebugEnabled = false
++let foregroundResponseDrainEnabled = true
++let foregroundFetchBypassEnabled = false
+ let status = {
+   state: 'idle', initTime: '', ready: 0, total: 0, downloaded: 0, failed: 0, reason: ''
+ }
+@@ -51,12 +54,17 @@ self.addEventListener('fetch', (event) => {
+   if (request.method !== 'GET') return
+   const url = new URL(request.url)
+   if (url.origin !== self.location.origin || !url.pathname.startsWith(DATA_PREFIX)) return
++  // SVG 已由页面 IndexedDB 缓存管理；绕过 SW 响应拦截，避免浏览器在 fetch 事件路径中排队。
++  if (PRODUCT_SVG_RE.test(url.pathname)) return
++  // 诊断模式：不调用 respondWith，使页面请求完全绕过本 Service Worker 的数据处理路径。
++  if (foregroundFetchBypassEnabled) return
+   foregroundStarted()
+   const responsePromise = MANIFEST_RE.test(url.pathname) ? networkFirstManifest(request) : fetch(request)
+   event.respondWith(responsePromise)
+   // 克隆流读完才算请求结束，空闲窗口不会从“刚收到响应头”过早开始。
++  // 诊断关闭时跳过额外读取，借此隔离它对高并发页面请求的影响。
+   event.waitUntil(responsePromise
+-    .then((response) => response.clone().arrayBuffer())
++    .then((response) => (foregroundResponseDrainEnabled ? response.clone().arrayBuffer() : null))
+     .catch(() => {})
+     .finally(foregroundFinished))
+ })
+@@ -79,6 +87,16 @@ self.addEventListener('message', (event) => {
+     })())
+   } else if (data.type === 'setDownloadDebug') {
+     downloadDebugEnabled = Boolean(data.enabled)
++  } else if (data.type === 'setForegroundResponseDrain') {
++    foregroundResponseDrainEnabled = Boolean(data.enabled)
++  } else if (data.type === 'setForegroundFetchBypass') {
++    foregroundFetchBypassEnabled = Boolean(data.enabled)
++    // 完全绕过模式不能让后台预取继续占用同一网络链路，否则无法作为页面直连的对照实验。
++    if (foregroundFetchBypassEnabled) event.waitUntil(cancelPrefetch('idle'))
++  } else if (data.type === 'foregroundSvgRequestStarted') {
++    if (!foregroundFetchBypassEnabled) foregroundStarted()
++  } else if (data.type === 'foregroundSvgRequestFinished') {
++    if (!foregroundFetchBypassEnabled) foregroundFinished()
+   }
+ })
+ 
+@@ -154,6 +172,8 @@ async function cancelPrefetch(nextState = 'idle') {
+ }
+ 
+ async function startPrefetch(initTime, rawOptions, resume = false) {
++  // 完全绕过页面 SW 的诊断模式下，后台预取也必须停用，避免污染对照结果。
++  if (foregroundFetchBypassEnabled) return cancelPrefetch('idle')
+   const options = normalizePrefetchOptions(rawOptions)
+   await saveOptions(options)
+   if (!options.enabled) return cancelPrefetch('disabled')
+diff --git a/vis_web/src/components/PushSubscribeButton.vue b/vis_web/src/components/PushSubscribeButton.vue
+index ae614ac..3f09ca8 100644
+--- a/vis_web/src/components/PushSubscribeButton.vue
++++ b/vis_web/src/components/PushSubscribeButton.vue
+@@ -1,7 +1,7 @@
+ <script setup>
+ // 全局设置入口：实时更新订阅/预取策略与本地配置备份。
+ import { Download, Settings, Upload } from 'lucide-vue-next'
+-import { NButton, NCard, NCheckbox, NCheckboxGroup, NModal, NSwitch, NTabPane, NTabs, NTooltip } from 'naive-ui'
++import { NButton, NCard, NCheckbox, NCheckboxGroup, NInputNumber, NModal, NSwitch, NTabPane, NTabs, NTooltip } from 'naive-ui'
+ import { onMounted, ref } from 'vue'
+ 
+ import { exportSavedConfigurations, importSavedConfigurations } from '../utils/configBackup'
+@@ -20,9 +20,22 @@ import {
+   prefetchLatest,
+   setPrefetchOptions,
+   setServiceWorkerDownloadDebug,
++  setServiceWorkerForegroundFetchBypass,
++  setServiceWorkerForegroundResponseDrain,
+   subscribeServiceWorkerDownloadDebug
+ } from '../utils/swClient'
+-import { exportDownloadDebug, isDownloadDebugEnabled, recordServiceWorkerDownload, setDownloadDebugEnabled } from '../utils/downloadDebug'
++import {
++  exportDownloadDebug,
++  isDownloadDebugEnabled,
++  isForegroundFetchBypassEnabled,
++  isForegroundResponseDrainEnabled,
++  recordDownloadDebug,
++  recordServiceWorkerDownload,
++  setDownloadDebugEnabled,
++  setForegroundFetchBypassEnabled,
++  setForegroundResponseDrainEnabled
++} from '../utils/downloadDebug'
++import { getMaxConcurrent, setMaxConcurrent } from '../utils/loadQueue'
+ 
+ const Z_LEVEL_OPTIONS = [
+   { value: 0, label: 'z0 · 概览' },
+@@ -42,6 +55,9 @@ const backupMessage = ref('')
+ const importedBackup = ref(false)
+ const downloadDebugEnabled = ref(false)
+ const debugMessage = ref('')
++const svgMaxConcurrent = ref(4)
++const foregroundResponseDrainEnabled = ref(true)
++const foregroundFetchBypassEnabled = ref(false)
+ 
+ // 预取策略（本地副本，弹窗内编辑，「保存并应用」时落盘 + 下发）
+ const zLevels = ref([...DEFAULT_PREFETCH_OPTIONS.zLevels])
+@@ -56,6 +72,9 @@ function loadLocal() {
+   layerTypes.value = options.layerTypes
+   levels.value = options.levels
+   downloadDebugEnabled.value = isDownloadDebugEnabled()
++  svgMaxConcurrent.value = getMaxConcurrent()
++  foregroundResponseDrainEnabled.value = isForegroundResponseDrainEnabled()
++  foregroundFetchBypassEnabled.value = isForegroundFetchBypassEnabled()
+ }
+ 
+ async function refreshState() {
+@@ -68,6 +87,8 @@ onMounted(async () => {
+   loadLocal()
+   await refreshState()
+   setServiceWorkerDownloadDebug(downloadDebugEnabled.value)
++  setServiceWorkerForegroundResponseDrain(foregroundResponseDrainEnabled.value)
++  setServiceWorkerForegroundFetchBypass(foregroundFetchBypassEnabled.value)
+   subscribeServiceWorkerDownloadDebug(recordServiceWorkerDownload)
+ })
+ 
+@@ -172,6 +193,32 @@ function exportDownloadDebugLog() {
+   URL.revokeObjectURL(url)
+   debugMessage.value = `已导出 ${report.summary.recordCount} 条记录。`
+ }
++
++function applySvgMaxConcurrent(value) {
++  svgMaxConcurrent.value = setMaxConcurrent(value)
++  recordDownloadDebug({ kind: 'config', phase: 'svg-concurrency-changed', maxConcurrent: svgMaxConcurrent.value })
++  debugMessage.value = `前台 SVG 并发数已设为 ${svgMaxConcurrent.value}，新排队请求会立即按此限制执行。`
++}
++
++function toggleForegroundResponseDrain(value) {
++  foregroundResponseDrainEnabled.value = value
++  setForegroundResponseDrainEnabled(value)
++  setServiceWorkerForegroundResponseDrain(value)
++  recordDownloadDebug({ kind: 'config', phase: 'foreground-response-drain-changed', enabled: value })
++  debugMessage.value = value
++    ? '已开启 Service Worker 完整读取响应体。'
++    : '已关闭 Service Worker 完整读取响应体，可开始对照测试。'
++}
++
++function toggleForegroundFetchBypass(value) {
++  foregroundFetchBypassEnabled.value = value
++  setForegroundFetchBypassEnabled(value)
++  setServiceWorkerForegroundFetchBypass(value)
++  recordDownloadDebug({ kind: 'config', phase: 'foreground-fetch-bypass-changed', enabled: value })
++  debugMessage.value = value
++    ? '已完全跳过 Service Worker 数据请求拦截，并停止后台预取，可开始对照测试。'
++    : '已恢复 Service Worker 数据请求拦截；如需后台预取，请刷新页面或在“实时更新”中重新应用设置。'
++}
+ </script>
+ 
+ <template>
+@@ -277,6 +324,35 @@ function exportDownloadDebugLog() {
+               </div>
+               <n-switch :value="downloadDebugEnabled" @update:value="toggleDownloadDebug" />
+             </div>
++            <div class="push-row push-section">
++              <div>
++                <div class="push-row__title">前台 SVG 并发数</div>
++                <div class="push-row__desc">仅影响页面可见图层的网络与解码队列；默认 4。用于比较 2、4、8 等并发档位，不影响后台预加载。</div>
++              </div>
++              <n-input-number
++                :value="svgMaxConcurrent"
++                :min="1"
++                :max="16"
++                :step="1"
++                size="small"
++                style="width: 88px"
++                @update:value="applySvgMaxConcurrent"
++              />
++            </div>
++            <div class="push-row push-section">
++              <div>
++                <div class="push-row__title">Service Worker 完整读取响应体</div>
++                <div class="push-row__desc">开启时保留 <code>response.clone().arrayBuffer()</code>；关闭后跳过这次额外读取，用于定位它是否放大 SVG 并发竞争。</div>
++              </div>
++              <n-switch :value="foregroundResponseDrainEnabled" @update:value="toggleForegroundResponseDrain" />
++            </div>
++            <div class="push-row push-section">
++              <div>
++                <div class="push-row__title">完全跳过 Service Worker 数据请求拦截</div>
++                <div class="push-row__desc">开启后页面的 <code>/data/</code> 请求直接走浏览器网络栈，并停止后台预取；不执行 Service Worker 缓存、预取协调或完整读取，仅用于定位拦截路径是否导致等待。</div>
++              </div>
++              <n-switch :value="foregroundFetchBypassEnabled" @update:value="toggleForegroundFetchBypass" />
++            </div>
+             <div class="backup-section">
+               <div class="backup-section__title">导出诊断记录</div>
+               <p>开启后复现切换图层、缩放和多图操作，再导出 JSON。敏感查询参数不会写入记录。</p>
+diff --git a/vis_web/src/composables/weatherView/helpers.js b/vis_web/src/composables/weatherView/helpers.js
+index f1056be..4ae1837 100644
+--- a/vis_web/src/composables/weatherView/helpers.js
++++ b/vis_web/src/composables/weatherView/helpers.js
+@@ -3,6 +3,7 @@
+ import { sharedSvgImageCache } from '../../utils/indexedDBCache'
+ import { runQueued, PRIORITY } from '../../utils/loadQueue'
+ import { recordDownloadDebug } from '../../utils/downloadDebug'
++import { foregroundSvgRequestFinished, foregroundSvgRequestStarted } from '../../utils/swClient'
+ import {
+   FILL_LAYER_TYPES,
+   WIND_OVERLAY_LAYER_TYPES,
+@@ -268,15 +269,20 @@ export async function cacheSvgSource(url, priority = PRIORITY.LOW, signal = null
+     const task = runQueued(async (schedulerSignal) => {
+       const networkStartedAt = performance.now()
+       recordDownloadDebug({ kind: 'svg', phase: 'network-start', url, priority: priority === PRIORITY.HIGH ? 'high' : 'low' })
+-      const response = await fetch(url, { signal: schedulerSignal })
+-      recordDownloadDebug({ kind: 'svg', phase: 'response-headers', url, status: response.status, timingMs: { queueAndTtfb: performance.now() - networkStartedAt }, headers: {
+-        cacheControl: response.headers.get('cache-control'), contentLength: response.headers.get('content-length'), etag: response.headers.get('etag'), serverTiming: response.headers.get('server-timing')
+-      } })
+-      if (!response.ok) return null
+-      const blob = await response.blob()
+-      await cache.putSource(url, blob, response.headers.get('content-type'))
+-      recordDownloadDebug({ kind: 'svg', phase: 'indexeddb-stored', url, timingMs: { total: performance.now() - networkStartedAt }, bytes: blob.size })
+-      return blob
++      foregroundSvgRequestStarted()
++      try {
++        const response = await fetch(url, { signal: schedulerSignal })
++        recordDownloadDebug({ kind: 'svg', phase: 'response-headers', url, status: response.status, timingMs: { queueAndTtfb: performance.now() - networkStartedAt }, headers: {
++          cacheControl: response.headers.get('cache-control'), contentLength: response.headers.get('content-length'), etag: response.headers.get('etag'), serverTiming: response.headers.get('server-timing')
++        } })
++        if (!response.ok) return null
++        const blob = await response.blob()
++        await cache.putSource(url, blob, response.headers.get('content-type'))
++        recordDownloadDebug({ kind: 'svg', phase: 'indexeddb-stored', url, timingMs: { total: performance.now() - networkStartedAt }, bytes: blob.size })
++        return blob
++      } finally {
++        foregroundSvgRequestFinished()
++      }
+     }, priority, signal, scheduling)
+     pending = { promise: task, priority }
+     inFlightSourceLoads.set(url, pending)
+diff --git a/vis_web/src/utils/configBackup.js b/vis_web/src/utils/configBackup.js
+index 483817f..deff2ce 100644
+--- a/vis_web/src/utils/configBackup.js
++++ b/vis_web/src/utils/configBackup.js
+@@ -6,7 +6,10 @@ export const CONFIGURATION_STORAGE_KEYS = [
+   'weather-view-multi-element-configurations',
+   'weather-view-multi-element-forecast-configurations',
+   'weather-view-saved-map-views',
+-  'weather-prefetch-options'
++  'weather-prefetch-options',
++  'weather-svg-max-concurrent',
++  'weather-sw-foreground-response-drain',
++  'weather-sw-foreground-fetch-bypass'
+ ]
+ 
+ const BACKUP_FORMAT = 'weather-system-identification-config-backup'
+diff --git a/vis_web/src/utils/downloadDebug.js b/vis_web/src/utils/downloadDebug.js
+index e66920b..3310f47 100644
+--- a/vis_web/src/utils/downloadDebug.js
++++ b/vis_web/src/utils/downloadDebug.js
+@@ -1,5 +1,7 @@
+ // 数据下载诊断：只在用户明确开启时记录，避免常规使用产生额外内存与存储开销。
+ const STORAGE_KEY = 'weather-download-debug-enabled'
++export const FOREGROUND_RESPONSE_DRAIN_STORAGE_KEY = 'weather-sw-foreground-response-drain'
++export const FOREGROUND_FETCH_BYPASS_STORAGE_KEY = 'weather-sw-foreground-fetch-bypass'
+ const MAX_RECORDS = 2_000
+ const records = []
+ let observer = null
+@@ -22,6 +24,27 @@ export function isDownloadDebugEnabled() {
+   return typeof window !== 'undefined' && window.localStorage.getItem(STORAGE_KEY) === 'true'
+ }
+ 
++// 默认保留旧行为；关闭后仅用于诊断 Service Worker 的额外完整读取是否造成竞争。
++export function isForegroundResponseDrainEnabled() {
++  return typeof window === 'undefined'
++    || window.localStorage.getItem(FOREGROUND_RESPONSE_DRAIN_STORAGE_KEY) !== 'false'
++}
++
++export function setForegroundResponseDrainEnabled(enabled) {
++  if (typeof window === 'undefined') return
++  window.localStorage.setItem(FOREGROUND_RESPONSE_DRAIN_STORAGE_KEY, enabled ? 'true' : 'false')
++}
++
++export function isForegroundFetchBypassEnabled() {
++  return typeof window !== 'undefined'
++    && window.localStorage.getItem(FOREGROUND_FETCH_BYPASS_STORAGE_KEY) === 'true'
++}
++
++export function setForegroundFetchBypassEnabled(enabled) {
++  if (typeof window === 'undefined') return
++  window.localStorage.setItem(FOREGROUND_FETCH_BYPASS_STORAGE_KEY, enabled ? 'true' : 'false')
++}
++
+ function append(record) {
+   if (!isDownloadDebugEnabled()) return
+   records.push({ at: nowIso(), ...record })
+diff --git a/vis_web/src/utils/loadQueue.js b/vis_web/src/utils/loadQueue.js
+index c5b7930..4ecb54b 100644
+--- a/vis_web/src/utils/loadQueue.js
++++ b/vis_web/src/utils/loadQueue.js
+@@ -1,6 +1,9 @@
+ // 页面网络/解码调度器。LOW 只在完全没有 HIGH 运行或等待时启动；HIGH 到来会中止
+ // 所有在途 LOW，使相邻时效预加载无法与用户当前所需资源竞争连接。
+-export const MAX_CONCURRENT = 8
++export const DEFAULT_MAX_CONCURRENT = 4
++export const MIN_MAX_CONCURRENT = 1
++export const MAX_MAX_CONCURRENT = 16
++export const LOAD_CONCURRENCY_STORAGE_KEY = 'weather-svg-max-concurrent'
+ const LOW_MAX_CONCURRENT = 4
+ 
+ export const PRIORITY = { HIGH: 0, LOW: 1 }
+@@ -12,6 +15,33 @@ const activeByGroup = new Map()
+ let highActive = 0
+ let lowActive = 0
+ let pumpScheduled = false
++let maxConcurrent = loadStoredMaxConcurrent()
++
++function normalizeMaxConcurrent(value) {
++  const numeric = Number.parseInt(value, 10)
++  if (!Number.isFinite(numeric)) return DEFAULT_MAX_CONCURRENT
++  return Math.min(MAX_MAX_CONCURRENT, Math.max(MIN_MAX_CONCURRENT, numeric))
++}
++
++function loadStoredMaxConcurrent() {
++  if (typeof window === 'undefined') return DEFAULT_MAX_CONCURRENT
++  return normalizeMaxConcurrent(window.localStorage.getItem(LOAD_CONCURRENCY_STORAGE_KEY))
++}
++
++// 仅限制页面前台 SVG 的网络/解码队列；不会改变 Service Worker 后台预取的并发数。
++export function getMaxConcurrent() {
++  return maxConcurrent
++}
++
++export function setMaxConcurrent(value) {
++  maxConcurrent = normalizeMaxConcurrent(value)
++  if (typeof window !== 'undefined') {
++    window.localStorage.setItem(LOAD_CONCURRENCY_STORAGE_KEY, String(maxConcurrent))
++  }
++  // 降低时不取消在途任务，只阻止新任务启动；提高时立即补充排队任务。
++  schedulePump()
++  return maxConcurrent
++}
+ 
+ function abortReason() {
+   return new DOMException('被高优先级请求中断', 'AbortError')
+@@ -50,7 +80,7 @@ function nextDispatchableIndex(queue) {
+ 
+ function pump() {
+   pumpScheduled = false
+-  while (activeEntries.size < MAX_CONCURRENT && highQueue.length) {
++  while (activeEntries.size < maxConcurrent && highQueue.length) {
+     const index = nextDispatchableIndex(highQueue)
+     if (index < 0) break
+     dispatch(highQueue.splice(index, 1)[0])
+@@ -58,7 +88,7 @@ function pump() {
+   // 严格空闲：只要 HIGH 正在运行或等待，就不启动 LOW。
+   while (
+     highActive === 0 && highQueue.length === 0 &&
+-    activeEntries.size < MAX_CONCURRENT && lowActive < LOW_MAX_CONCURRENT && lowQueue.length
++    activeEntries.size < maxConcurrent && lowActive < LOW_MAX_CONCURRENT && lowQueue.length
+   ) {
+     const index = nextDispatchableIndex(lowQueue)
+     if (index < 0) break
+@@ -140,6 +170,6 @@ export function getQueueStats() {
+     highWaiting: highQueue.length,
+     lowWaiting: lowQueue.length,
+     activeGroups: activeByGroup.size,
+-    maxConcurrent: MAX_CONCURRENT
++    maxConcurrent
+   }
+ }
+diff --git a/vis_web/src/utils/swClient.js b/vis_web/src/utils/swClient.js
+index 48f0fa0..685d3ab 100644
+--- a/vis_web/src/utils/swClient.js
++++ b/vis_web/src/utils/swClient.js
+@@ -86,6 +86,23 @@ export function setServiceWorkerDownloadDebug(enabled) {
+   return postToController({ type: 'setDownloadDebug', enabled: Boolean(enabled) })
+ }
+ 
++export function setServiceWorkerForegroundResponseDrain(enabled) {
++  return postToController({ type: 'setForegroundResponseDrain', enabled: Boolean(enabled) })
++}
++
++export function setServiceWorkerForegroundFetchBypass(enabled) {
++  return postToController({ type: 'setForegroundFetchBypass', enabled: Boolean(enabled) })
++}
++
++// 产品 SVG 默认绕过 SW fetch 拦截；页面在真实网络请求前后通知 SW 暂停/恢复后台预取。
++export function foregroundSvgRequestStarted() {
++  return postToController({ type: 'foregroundSvgRequestStarted' })
++}
++
++export function foregroundSvgRequestFinished() {
++  return postToController({ type: 'foregroundSvgRequestFinished' })
++}
++
+ export function subscribeServiceWorkerDownloadDebug(listener) {
+   downloadDebugListeners.add(listener)
+   return () => downloadDebugListeners.delete(listener)
+diff --git a/vis_web/tests/svg-prefetch-redesign.test.js b/vis_web/tests/svg-prefetch-redesign.test.js
+index 36cbe22..c1364dc 100644
+--- a/vis_web/tests/svg-prefetch-redesign.test.js
++++ b/vis_web/tests/svg-prefetch-redesign.test.js
+@@ -123,6 +123,24 @@ describe('IndexedDB v2 原始 SVG 缓存', () => {
+ })
+ 
+ describe('页面严格优先级队列', () => {
++  it('可在运行时调整前台 SVG 并发数，并限制为安全范围', async () => {
++    const {
++      DEFAULT_MAX_CONCURRENT,
++      MAX_MAX_CONCURRENT,
++      MIN_MAX_CONCURRENT,
++      getMaxConcurrent,
++      setMaxConcurrent
++    } = await import('../src/utils/loadQueue.js')
++    try {
++      assert.equal(setMaxConcurrent(4), 4)
++      assert.equal(getMaxConcurrent(), 4)
++      assert.equal(setMaxConcurrent(99), MAX_MAX_CONCURRENT)
++      assert.equal(setMaxConcurrent(0), MIN_MAX_CONCURRENT)
++    } finally {
++      setMaxConcurrent(DEFAULT_MAX_CONCURRENT)
++    }
++  })
++
+   it('高优先级到来会中止在途低优先级，且二者不并发', async () => {
+     const { PRIORITY, runQueued } = await import('../src/utils/loadQueue.js')
+     const events = []
+@@ -174,7 +192,8 @@ describe('页面严格优先级队列', () => {
+   })
+ 
+   it('同批多图请求先覆盖各个面板，再复用剩余并发槽位', async () => {
+-    const { PRIORITY, runQueued } = await import('../src/utils/loadQueue.js')
++    const { DEFAULT_MAX_CONCURRENT, PRIORITY, runQueued, setMaxConcurrent } = await import('../src/utils/loadQueue.js')
++    setMaxConcurrent(8)
+     const events = []
+     let releaseAll
+     const gate = new Promise((resolve) => {
+@@ -195,8 +214,12 @@ describe('页面严格优先级队列', () => {
+     assert.equal(events.length, 8)
+     assert.deepEqual(new Set(events.slice(0, 6).map((label) => label[0])), new Set(['a', 'b', 'c', 'd', 'e', 'f']))
+ 
+-    releaseAll()
+-    await Promise.all(running)
++    try {
++      releaseAll()
++      await Promise.all(running)
++    } finally {
++      setMaxConcurrent(DEFAULT_MAX_CONCURRENT)
++    }
+   })
+ })
+ 

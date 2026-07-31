@@ -5,7 +5,8 @@ import { SvgImageCache } from '../src/utils/indexedDBCache.js'
 import {
   canvasPixelRatioForSize,
   multiMapSizeFactor,
-  renderScaleForZoom
+  renderScaleForZoom,
+  tileZoomForView
 } from '../src/composables/weatherView/multiMapResolution.js'
 
 test('多图线性尺寸按实际 canvas 面积计算', () => {
@@ -28,6 +29,15 @@ test('多图 SVG 栅格倍率同时响应 canvas 尺寸与地图缩放', () => {
   assert.equal(renderScaleForZoom(3, true, { width: 720, height: 480 }), 0.75)
   assert.equal(renderScaleForZoom(12, true, { width: 720, height: 480 }), 1.5)
   assert.equal(renderScaleForZoom(12, false, halfSize), 2)
+})
+
+test('多图瓦片层级按子图实际线性尺寸折算地图放大系数', () => {
+  const halfSize = { width: 480, height: 320 }
+
+  assert.equal(tileZoomForView(10), 2)
+  assert.equal(tileZoomForView(10, true, halfSize), 0)
+  assert.equal(tileZoomForView(16, true, halfSize), 1)
+  assert.equal(tileZoomForView(20, true, halfSize), 2)
 })
 
 test('低分辨率 SVG 使用独立的内存缓存项', () => {

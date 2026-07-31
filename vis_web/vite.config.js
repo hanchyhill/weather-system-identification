@@ -15,11 +15,16 @@ const staticMapFiles = new Map([
   ['bou2_4l.topo.simplify.json', path.join(mapDataRoot, 'bou2_4l.topo.simplify.json')]
 ])
 
+// 设为线上地址（如 https://nwp.gdmo.gq）后，/data 改为反代到该服务器，
+// 便于在本地改代码、直接用生产数据量级复现下载性能问题。
+const remoteDataOrigin = process.env.WEATHER_REMOTE_DATA || ''
+
 function localDataPlugin() {
   return {
     name: 'weather-local-data',
     configureServer(server) {
-      server.middlewares.use('/data', (req, res, next) => {
+      // 反代模式下不注册本地 /data 中间件，请求全部交给 server.proxy。
+      if (!remoteDataOrigin) server.middlewares.use('/data', (req, res, next) => {
         const rawUrl = decodeURIComponent(req.url || '/')
         const relativePath = rawUrl.split('?')[0].replace(/^\/+/, '')
         const resolvedPath = path.resolve(dataRoot, relativePath)
@@ -101,7 +106,17 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:49173',
         changeOrigin: true
-      }
+      },
+      // WEATHER_REMOTE_DATA=https://nwp.gdmo.gq pnpm dev
+      ...(remoteDataOrigin
+        ? {
+            '/data': {
+              target: remoteDataOrigin,
+              changeOrigin: true,
+              secure: false
+            }
+          }
+        : {})
     }
   }
 })

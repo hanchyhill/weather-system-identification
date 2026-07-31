@@ -17,10 +17,18 @@ try:
 except ModuleNotFoundError:
     from src.weather_common import default_output_root
 
+try:
+    from archive_cold_data import DEFAULT_RETENTION_DAYS, run_archive
+except ModuleNotFoundError:
+    from src.archive_cold_data import DEFAULT_RETENTION_DAYS, run_archive
+
 
 SCHEDULE_MINUTES = (9, 19, 29, 39, 49, 59)
 SCRIPT_PATH = Path(__file__).resolve().parent / "draw" / "generate_svg_layers.py"
 DEFAULT_OUTPUT_ROOT = f"{default_output_root()}/products"
+# 归档每天只需一次：放在 SCHEDULE_MINUTES 之外的时刻，避免和生成任务抢 IO。
+ARCHIVE_HOUR = 3
+ARCHIVE_MINUTE = 39
 
 
 def _log(message: str) -> None:
@@ -102,14 +110,52 @@ def _submit_if_idle(
     return executor.submit(_run_generate_svg_layers, _script_args_with_defaults(script_args), python)
 
 
+def _run_archive(hot_root: str, cold_root: str, retention_days: int) -> bool:
+    """在调度线程池中执行冷数据归档；异常不向外抛，避免中断调度循环。"""
+    try:
+        _, failed = run_archive(
+            hot_root=Path(hot_root),
+            cold_root=Path(cold_root),
+            retention_days=retention_days,
+        )
+        return failed == 0
+    except Exception:
+        _log("冷数据归档出现未预期错误。")
+        traceback.print_exc()
+        return False
+
+
+def _should_archive(now: datetime, last_archive_date: object) -> bool:
+    """到达归档时刻且当天尚未归档时返回 True。"""
+    return (
+        now.hour == ARCHIVE_HOUR
+        and now.minute == ARCHIVE_MINUTE
+        and last_archive_date != now.date()
+    )
+
+
 def run_scheduler(
     *,
     script_args: Sequence[str],
     python: str = sys.executable,
     run_immediately: bool = False,
+    archive_hot_root: str | None = None,
+    archive_cold_root: str | None = None,
+    archive_retention_days: int = DEFAULT_RETENTION_DAYS,
 ) -> None:
-    """Run SVG generation at :09, :19, :29, :39, :49, and :59."""
+    """Run SVG generation at :09, :19, :29, :39, :49, and :59.
+
+    配置了 ``archive_cold_root`` 时，每天 ARCHIVE_HOUR:ARCHIVE_MINUTE 追加一次冷数据
+    归档。归档与生成共用同一个单 worker 线程池，因此二者永不并发，不会互相抢 IO。
+    """
     current_job: Future[bool] | None = None
+    last_archive_date: object = None
+    archive_enabled = bool(archive_cold_root)
+    if archive_enabled:
+        _log(
+            f"冷数据归档已启用：热盘={archive_hot_root} 冷盘={archive_cold_root} "
+            f"保留={archive_retention_days} 天，每天 {ARCHIVE_HOUR:02d}:{ARCHIVE_MINUTE:02d} 执行"
+        )
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         if run_immediately:
@@ -121,6 +167,17 @@ def run_scheduler(
             _log(f"Next scheduled SVG generation: {next_run:%Y-%m-%d %H:%M:%S}")
             time.sleep(sleep_seconds)
             current_job = _submit_if_idle(executor, current_job, script_args, python)
+
+            now = datetime.now()
+            if archive_enabled and _should_archive(now, last_archive_date):
+                last_archive_date = now.date()
+                # 排在生成任务之后入队；单 worker 保证它等生成结束才开始。
+                executor.submit(
+                    _run_archive,
+                    archive_hot_root or default_output_root(),
+                    archive_cold_root,
+                    archive_retention_days,
+                )
 
 
 def parse_args() -> argparse.Namespace:
@@ -140,6 +197,25 @@ def parse_args() -> argparse.Namespace:
         default=sys.executable,
         help="Python executable used to launch generate_svg_layers.py.",
     )
+    parser.add_argument(
+        "--archive-cold-root",
+        default=None,
+        help=(
+            "NFS 冷盘根目录（如 /data/weather_vis）。设置后每天定时把超过保留期的"
+            "起报时次从热盘迁移过去；不设置则不做归档。"
+        ),
+    )
+    parser.add_argument(
+        "--archive-hot-root",
+        default=None,
+        help="本地热盘根目录，默认取 default_output_root()。",
+    )
+    parser.add_argument(
+        "--archive-retention-days",
+        type=int,
+        default=DEFAULT_RETENTION_DAYS,
+        help=f"热盘保留天数（默认 {DEFAULT_RETENTION_DAYS}）。",
+    )
     args, script_args = parser.parse_known_args()
     args.script_args = script_args
     return args
@@ -152,6 +228,9 @@ def main() -> None:
             script_args=args.script_args,
             python=args.python,
             run_immediately=args.run_immediately,
+            archive_hot_root=args.archive_hot_root,
+            archive_cold_root=args.archive_cold_root,
+            archive_retention_days=args.archive_retention_days,
         )
     except KeyboardInterrupt:
         _log("SVG generation scheduler stopped by user.")

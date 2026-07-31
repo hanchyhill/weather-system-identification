@@ -20,9 +20,11 @@ const RHUM_COLORS = [
   '#c7e8a2', '#a5d575', '#80bc49', '#5fa034', '#418326', '#1a3512'
 ]
 
+// 与 Python 端 COLOR_ARR_VORT 逐档对应（低值 2 档蓝 + 高值 6 档黄橙红），
+// 共 8 档。改动任一端都要同步另一端，否则图例与填色对不上。
 const VORT_COLORS = [
-  '#e0f3f8', '#abd9e9', '#74add1', '#4575b4', '#ffff2a', '#fff200', '#ffd800',
-  '#ffb200', '#ff8000', '#ff4f00', '#ff1c00', '#c80000', '#8a0000', '#5f0000'
+  '#abd9e9', '#4575b4',
+  '#ffff2a', '#ffbe00', '#ff6b00', '#ff1600', '#a80000', '#530200'
 ]
 
 const RAIN_24_COLORS = ['#a5f18f', '#3cb83e', '#23baff', '#0004fd', '#ff00f2', '#91003d', '#f0d013', '#fe5e00', '#8915da']
@@ -52,9 +54,10 @@ export function colorLegendsForLayers(layerTypes, level) {
   return layers.flatMap((type) => {
     if (type === 'wind_speed_fill' || type === 'surface_speed_fill') return [windLegend(type, String(level))]
     if (type === 'vort_fill') {
+      // 8 档等宽渲染，故刻度按档序号 /8 定位：0.15 是第 2 档边界 -> 25%。
       return [legend(type, '相对涡度', '10⁻⁵ s⁻¹', VORT_COLORS, [
-        { label: '0.05', offset: 0 }, { label: '0.15', offset: 11 }, { label: '0.4', offset: 37 },
-        { label: '0.7', offset: 68 }, { label: '1.0+', offset: 100 }
+        { label: '0.05', offset: 0 }, { label: '0.15', offset: 25 }, { label: '0.45', offset: 50 },
+        { label: '0.75', offset: 75 }, { label: '1.0+', offset: 100 }
       ])]
     }
     if (type === 'rhum_fill') {

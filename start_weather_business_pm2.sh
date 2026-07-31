@@ -6,8 +6,12 @@ WEB_ROOT="${PROJECT_ROOT}/vis_web"
 SERVER_ROOT="${PROJECT_ROOT}/server"
 PY_CONFIG="${PROJECT_ROOT}/ecosystem.weather-business.config.js"
 
-export WEATHER_OUTPUT_ROOT="${WEATHER_OUTPUT_ROOT:-/data/weather_vis}"
+# 热盘（本地 SSD）：生成任务写入路径，须与 nginx 的 root /srv/weather/hot + /data 对应。
+export WEATHER_OUTPUT_ROOT="${WEATHER_OUTPUT_ROOT:-/srv/weather/hot/data}"
 export WEATHER_PRODUCTS_ROOT="${WEATHER_PRODUCTS_ROOT:-${WEATHER_OUTPUT_ROOT}/products}"
+# 冷盘（NFS）：draw_schedule 每天把超过保留期的时次迁移到此处；置空则不归档。
+export WEATHER_COLD_ROOT="${WEATHER_COLD_ROOT:-/data/weather_vis}"
+export WEATHER_HOT_RETENTION_DAYS="${WEATHER_HOT_RETENTION_DAYS:-7}"
 
 # 默认不在服务器上构建前端：dist/ 应在本地测试环境构建好后上传到服务器。
 # 如需在本机构建，运行前设置 BUILD_FRONTEND=1。
@@ -43,6 +47,14 @@ ensure_node_tools() {
 }
 
 mkdir -p "${WEATHER_OUTPUT_ROOT}" "${WEATHER_PRODUCTS_ROOT}" "${PROJECT_ROOT}/logs"
+
+# 热盘目录若不可写（通常是首次部署尚未 sudo 建目录/授权），提前失败并给出提示，
+# 避免 PM2 起来后每 10 分钟静默写失败。
+if [ ! -w "${WEATHER_PRODUCTS_ROOT}" ]; then
+  echo "错误：热盘目录不可写：${WEATHER_PRODUCTS_ROOT}" >&2
+  echo "      请先执行：sudo mkdir -p ${WEATHER_PRODUCTS_ROOT} && sudo chown -R $(id -un):$(id -gn) /srv/weather/hot" >&2
+  exit 1
+fi
 
 ensure_uv
 export PATH="${HOME}/.local/bin:${PATH}"

@@ -19,8 +19,10 @@ import {
 export {
   canvasPixelRatioForSize,
   multiMapSizeFactor,
-  renderScaleForZoom
+  renderScaleForZoom,
+  tileZoomForView
 } from './multiMapResolution'
+import { tileZoomForView } from './multiMapResolution'
 
 // 在途请求合并表（模块级，跨所有视图实例共享）：多个子图/单图同时请求同一 cacheKey 时，
 // 只发起一次网络+解码，其余等待同一 Promise。键与内存缓存一致（含 @Nx 超采样后缀）。
@@ -154,10 +156,8 @@ export function resolveTileZoom(record, desiredZ) {
   return availableZooms[0]
 }
 
-export function getTileZoom(k) {
-  if (k <= 5) return 0
-  if (k <= 8) return 1
-  return 2
+export function getTileZoom(k, compact = false, canvasSize = null) {
+  return tileZoomForView(k, compact, canvasSize)
 }
 
 // 经纬网格间隔（度）：放大系数越大间隔越小，网格线与坐标轴刻度共用同一步长。

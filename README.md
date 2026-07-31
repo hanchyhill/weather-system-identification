@@ -79,9 +79,12 @@ weather-system-identification/
 │   ├── vortex_warm_core.py       # 暖心识别脚本
 │   ├── vortex_tracker.py         # 涡旋追踪脚本
 │   ├── vortex_workflow.py        # 涡旋三段式总入口脚本
+│   ├── draw_schedule.py          # SVG 生成定时调度 + 每日冷数据归档
+│   ├── archive_cold_data.py      # 超期起报时次从热盘迁移到 NFS 冷盘
 │   └── ty-locator/
 │       └── locator.ipynb         # 台风定位算法
 ├── vis_web/                      # Vue 可视化前端（含 Service Worker 缓存/预取）
+│   ├── vite.config.js           # 含 WEATHER_REMOTE_DATA 远程数据调试代理
 │   ├── public/sw.js             # Service Worker：瓦片缓存 + 分级预取 + Web Push 处理
 │   └── src/                     # 组件、composables、utils（swClient / pushClient / initTime）
 ├── server/                       # Node 推送后端（Express + web-push，与绘图流水线解耦）
@@ -89,7 +92,8 @@ weather-system-identification/
 │   ├── pushSchedule.js          # 30 分钟轮询：新起报时次即推一次
 │   └── generateVapidKeys.js     # VAPID 密钥生成
 ├── ecosystem.weather-business.config.js  # PM2 应用定义（含 push-server / push-schedule）
-├── nginx_nwp.conf               # nginx：/data 与 /api 反向代理
+├── nginx_nwp.conf               # nginx：/data 热冷两级回落、/api 反向代理
+├── handoff/                     # 排查与迁移记录（性能定位、热冷存储部署手册）
 ├── 20228-tropical-cyclone-activities-ecmwf.pdf     # 热带气旋活动研究文档
 ├── ECMWF热带气旋追踪算法技术细节与跨机构比较.pdf    # 算法技术文档
 ├── Schumacher_etal_2009.pdf      # 相关学术文献
@@ -167,6 +171,58 @@ uv run python src/draw/generate_svg_layers.py --init-time 2026072812 --fc-hours 
 
 可按机器资源增加并行工作进程，例如 `--workers 4`。当前为减少重复风场产品，默认不生成流线图和风场箭头；风向杆以及 3/6/24 小时累计降水和其他图层会生成（仅在对应起止时效可用时生成）。
 
+#### 填色图层的色阶数量与文件体积
+
+`contourf` 的输出体积对色阶数量极其敏感，尤其是噪声较大的场：色阶越密，等值区被切碎成
+越多的小多边形，SVG 路径数量随之爆炸。`vort_fill` 曾用 89 档色阶，导致单块瓦片最大
+达 **71 MB**，占全部产品体积的 60%，而该图层仅占 3.8% 的请求量。
+
+现为 8 档（低值 2 档蓝 + 高值 6 档黄橙红），定义在 `src/draw/svg_layer_rendering.py`：
+
+```
+0.05  0.10 | 0.15  0.30  0.45  0.60  0.75  0.90  1.00     单位 10⁻⁵ s⁻¹
+ 蓝 2 档    |          黄橙红 6 档
+```
+
+低于 0.05 由 `set_under` 透明；高于 1.00 由 `extend="both"` 收进溢出色。
+同数据 A/B 实测：67.64 MB → 7.40 MB，渲染 4.11 s → 0.49 s。
+
+修改任何填色图层的色阶时注意两点：
+
+- **前后端必须同步**。`COLOR_ARR_VORT`（Python）与 `vis_web/src/utils/colorLegend.js`
+  的 `VORT_COLORS` 是逐档对应的，只改一端会让图例与实际填色错位；图例刻度的
+  `offset` 也要按新的档数重算。
+- **单块瓦片体积随天气活跃度剧烈变化**，同一路径在活跃时次可达 68 MB、平静时次仅
+  0.76 MB。评估色阶改动必须用**同一时次、同一数据**做 A/B，跨时次比较没有意义。
+
+### 前端开发与远程数据调试
+
+默认情况下 `pnpm dev` 通过 `vite.config.js` 的 `localDataPlugin` 直接从仓库的 `./data`
+目录读取瓦片与 JSON：
+
+```bash
+cd vis_web
+pnpm install
+pnpm dev
+```
+
+本机 `./data` 数据量有限时，可用 `WEATHER_REMOTE_DATA` 把 `/data` 反代到线上服务器，
+这样能在本地改前端代码、同时使用生产环境的完整数据量复现问题：
+
+```bash
+cd vis_web
+WEATHER_REMOTE_DATA=https://nwp.gdmo.gq pnpm dev
+```
+
+设置该变量后 `localDataPlugin` 不再注册本地 `/data` 中间件，请求全部交给
+`server.proxy` 转发。不设置则行为完全不变。
+
+两点限制：
+
+- Vite dev server 对浏览器是 **HTTP/1.1**，无法复现生产环境的 HTTP/2 多路复用行为。
+  定位网络层问题时应直接用 Node 的 `http2` 客户端压测线上地址，而不是依赖 dev server。
+- 该代理只影响 `/data`；`/api`（推送后端）仍按原有配置转发到本地 `127.0.0.1:49173`。
+
 ## 配置说明
 
 ### 数据服务器配置
@@ -182,6 +238,42 @@ source = 'ecmwfthin'
 - **时间范围**: 可设置任意时间进行分析
 - **空间范围**: 支持全球范围的数据处理
 - **高度层**: 支持多个标准气压层（特别优化500hPa层）
+
+### 生产环境的热/冷两级存储
+
+生产服务器的 `/data` 整体挂载在 NFS 上。实测同一批 200 个文件：**NFS 冷读约 729 ms/文件、
+暖读约 3 ms，本地 SSD 约 2 ms**。单次浏览会请求上万个各不相同的瓦片，冷读因此成为
+「SVG 等待时间长」的直接原因（与 Service Worker、前端并发数、gzip 均无关）。
+
+方案是近期数据放本地 SSD、更早的留在 NFS，由 nginx 按「先热后冷」查找：
+
+| 层级 | 路径 | 内容 |
+| --- | --- | --- |
+| 热盘 | `/srv/weather/hot/data/` | 近 `WEATHER_HOT_RETENTION_DAYS` 天（默认 7 天） |
+| 冷盘 | `/data/weather_vis/`（NFS） | 超过保留期的起报时次 |
+
+`nginx_nwp.conf` 用 `try_files $uri @cold_*` 实现按**单个文件**粒度的回落，
+前端 URL 不变，对客户端透明。冷盘 location 使用 `aio threads=weather_io`
+把 NFS 的阻塞读移出 worker，避免拖慢热盘请求。
+
+`src/archive_cold_data.py` 负责把超期时次从热盘迁到冷盘，已由 `src/draw_schedule.py`
+每天定时调用（与 SVG 生成共用单 worker 线程池，二者不会并发抢 IO）：
+
+```bash
+# 手动执行；--dry-run 只打印计划不动文件
+uv run python src/archive_cold_data.py \
+  --hot-root /srv/weather/hot/data \
+  --cold-root /data/weather_vis \
+  --retention-days 7 --dry-run
+```
+
+迁移语义：用 `rsync --remove-source-files` 逐时次搬运，中断后重跑会继续未完成的部分；
+冷盘已存在同名时次时按合并处理；无论是否超期都保留最新 2 个时次，避免与生成流水线竞争。
+
+**本地开发不受影响**：`weather_common.default_output_root()` 在 Windows 仍返回 `./data`，
+且 `--archive-cold-root` 默认为 `None`（归档关闭），需显式传参才启用。
+
+完整的部署步骤、容量测算与回滚方案见 `handoff/hot-cold-storage-migration.md`。
 
 ## 槽线输出数据格式
 
@@ -724,11 +816,19 @@ rsync -a vis_web/dist/ user@server:/var/www/html/nwp_weather_system/vis_web/dist
 
 | 变量 | 说明 | 默认 |
 | --- | --- | --- |
-| `WEATHER_OUTPUT_ROOT` | 输出根目录 | Windows `./data`，Linux `/data/weather_vis` |
+| `WEATHER_OUTPUT_ROOT` | 输出根目录（热盘） | Windows `./data`；PM2 部署 `/srv/weather/hot/data` |
 | `WEATHER_PRODUCTS_ROOT` | SVG 产品根目录 | `<output_root>/products` |
+| `WEATHER_COLD_ROOT` | 冷盘（NFS）根目录；**置空即禁用归档** | `/data/weather_vis` |
+| `WEATHER_HOT_RETENTION_DAYS` | 热盘保留天数 | `7` |
 | `WEATHER_PUSH_ROOT` | 推送状态（密钥/订阅/去重标记）目录 | `<output_root>/push` |
 | `WEATHER_VAPID_SUBJECT` | VAPID 声明的 `sub`（`mailto:` 或 `https:`） | `mailto:admin@example.com` |
 | `WEATHER_PUSH_PORT` | 订阅服务监听端口（须与 nginx 反代、vite dev proxy 一致） | `49173` |
+| `WEATHER_REMOTE_DATA` | 开发用：把 `/data` 反代到该地址，不设则读本地 `./data` | 空 |
+
+`WEATHER_OUTPUT_ROOT` 的默认值需区分两处：`weather_common.default_output_root()`
+在 Linux 仍返回 `/data/weather_vis`（脚本单独运行时的兜底），而
+`ecosystem.weather-business.config.js` 与 `start_weather_business_pm2.sh` 显式设为
+`/srv/weather/hot/data`，即 PM2 部署时写热盘。
 
 ### 数据流
 
@@ -784,9 +884,24 @@ Service Workers / Push 可见订阅，`<push_root>/subscriptions.json` 出现一
 
 ## 更新日志
 
-- **最新版本**: 支持ECMWF数据的实时处理和分析
+### 2026-07（SVG 下载性能与存储分层）
+
+- **定位并修复 SVG 加载慢的根因**：瓶颈是生产服务器 NFS 的冷文件读取（约 729 ms/文件，
+  暖读 3 ms），而非此前怀疑的 Service Worker 拦截、前端并发数或 gzip。
+  引入热/冷两级存储 + nginx 按文件回落，见「生产环境的热/冷两级存储」。
+- **`vort_fill` 色阶大幅精简**：从「4 档蓝 + 85 档黄橙红」（89 档）改为
+  「2 档蓝 + 6 档黄橙红」（8 档）。涡度场噪声大，色阶越密 `contourf` 产生的多边形碎片
+  越多。同数据 A/B 实测单块瓦片 **67.64 MB → 7.40 MB（降 89%）**，渲染耗时
+  4.11 s → 0.49 s。该图层原先占全部产品体积 60%、却仅占 3.8% 的请求量。
+- **新增冷数据归档**：`src/archive_cold_data.py` + `src/draw_schedule.py` 定时调用。
+- **新增远程数据调试**：`WEATHER_REMOTE_DATA=https://nwp.gdmo.gq pnpm dev`，
+  见「前端开发与远程数据调试」。
+
+### 早期
+
 - **功能特性**: 槽线检测和台风定位双重功能
 - **数据支持**: 全面支持多种气象要素的处理
+- 支持ECMWF数据的实时处理和分析
 
 ---
 

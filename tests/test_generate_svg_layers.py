@@ -23,7 +23,10 @@ from draw.svg_layer_rendering import (  # noqa: E402
     BOUND_VORT,
     CLRMAP_VORT,
     COLOR_ARR_VORT,
+    COLOR_ARR_VORT_HIGH,
     COLOR_ARR_VORT_LOW,
+    VORT_HIGH_BAND_COUNT,
+    VORT_LOW_BAND_COUNT,
     preprocess_surface_layer,
 )
 from draw.svg_layer_workflow import generate_surface_layers  # noqa: E402
@@ -155,12 +158,22 @@ class GenerateSvgLayersTests(unittest.TestCase):
 
         self.assertIs(result["precipitation"], precipitation)
 
-    def test_vorticity_fill_uses_four_low_value_blue_bins_then_original_scale(self):
+    def test_vorticity_fill_uses_two_low_blue_bands_then_six_high_bands(self):
+        """低值段 2 档蓝 + 高值段 6 档黄橙红，共 8 档。
+
+        涡度场噪声大，色阶越密 contourf 的多边形碎片越多。实测同数据 A/B：
+        高值段 85 档时 67.64 MB，收到 6 档后 9.63 MB，低值段再从 4 档收到 2 档
+        后 7.40 MB。0.05–0.15 仅跨 0.1 却落在噪声主导区，是碎片化最重的区间。
+        """
         self.assertEqual(len(BOUND_VORT) - 1, len(COLOR_ARR_VORT))
-        np.testing.assert_allclose(BOUND_VORT[:5], [0.05, 0.075, 0.1, 0.125, 0.15])
-        np.testing.assert_allclose(np.diff(BOUND_VORT[4:]), 0.01)
+        np.testing.assert_allclose(
+            BOUND_VORT, [0.05, 0.10, 0.15, 0.30, 0.45, 0.60, 0.75, 0.90, 1.00]
+        )
+        self.assertEqual(len(COLOR_ARR_VORT_LOW), VORT_LOW_BAND_COUNT)
+        self.assertEqual(len(COLOR_ARR_VORT_HIGH), VORT_HIGH_BAND_COUNT)
+        self.assertEqual((VORT_LOW_BAND_COUNT, VORT_HIGH_BAND_COUNT), (2, 6))
         self.assertAlmostEqual(float(BOUND_VORT[-1]), 1.0)
-        self.assertEqual(COLOR_ARR_VORT[:4], COLOR_ARR_VORT_LOW)
+        self.assertEqual(COLOR_ARR_VORT[:VORT_LOW_BAND_COUNT], COLOR_ARR_VORT_LOW)
         self.assertEqual(tuple(CLRMAP_VORT.get_under()), (1.0, 1.0, 1.0, 0.0))
 
     @patch("draw.svg_layer_manifest.time.sleep")
@@ -179,7 +192,6 @@ class GenerateSvgLayersTests(unittest.TestCase):
         self.assertEqual(replace_mock.call_count, 2)
         sleep_mock.assert_called_once_with(0.05)
 
-    @patch("draw.svg_layer_manifest.os.name", "nt")
     @patch("draw.svg_layer_manifest.time.sleep")
     @patch("draw.svg_layer_manifest.os.replace", side_effect=PermissionError(13, "Permission denied"))
     def test_atomic_json_write_falls_back_to_in_place_write_for_persistent_windows_lock(self, replace_mock, sleep_mock):
@@ -187,7 +199,11 @@ class GenerateSvgLayersTests(unittest.TestCase):
             path = Path(tmpdir) / "manifest.json"
             path.write_text('{"status": "old"}', encoding="utf-8")
 
-            self.assertEqual(write_json_atomic(path, {"status": "new"}), path)
+            # os.name 的补丁只包住被测调用：os 是单例模块，patch 它会全局生效，
+            # 而 pathlib 依赖 os.name 选择 PosixPath/WindowsPath，
+            # 在 Linux 上提前打补丁会让后续 Path(...) 抛 UnsupportedOperation。
+            with patch("draw.svg_layer_manifest.os.name", "nt"):
+                self.assertEqual(write_json_atomic(path, {"status": "new"}), path)
 
             self.assertEqual(path.read_text(encoding="utf-8"), '{\n  "status": "new"\n}')
             self.assertFalse(list(path.parent.glob("manifest.json.tmp.*")))
