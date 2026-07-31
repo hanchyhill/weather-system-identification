@@ -256,6 +256,57 @@ source = 'ecmwfthin'
 前端 URL 不变，对客户端透明。冷盘 location 使用 `aio threads=weather_io`
 把 NFS 的阻塞读移出 worker，避免拖慢热盘请求。
 
+因为 `nginx_nwp.conf` 是 `conf.d/` 下的 `server` 块，以下两项必须在
+`/etc/nginx/nginx.conf` 的 **main 段**声明，缺任一项都会出问题：
+
+```nginx
+worker_rlimit_nofile 65535;                          # open_file_cache 的前提，见下
+thread_pool weather_io threads=32 max_queue=65536;   # 缺失则 nginx 直接启动失败
+```
+
+#### `open_file_cache` 与文件描述符上限（务必配套设置）
+
+`open_file_cache` 缓存的是**打开的文件描述符本身**，每个条目占用 1 个 FD。
+因此 `max` 必须显著小于 `worker_rlimit_nofile`，否则缓存填满后，该 worker 内
+**任何** `open()` 都会失败并返回 500 —— 包括与瓦片无关的 `dist/index.html`。
+
+实际踩过的坑：曾配 `open_file_cache max=20000`，而未设 `worker_rlimit_nofile`
+时 worker 的 FD 上限只有 **1024**。浏览瓦片会迅速堆满 1024 个 FD，随后首页
+间歇性 500，`error.log` 报：
+
+```
+[crit] open() ".../dist/index.html" failed (24: Too many open files)
+```
+
+该故障的迷惑之处在于表现极不直观：
+
+- `/data/` 的瓦片请求仍 **200**（已在缓存中，无需新开 FD）
+- `/` 与 `/index.html` 返回 **500**（需要新开 FD，被拒）
+- `inactive` 到期后 FD 释放，站点**自行恢复**，于是呈现「先正常 → 突然 500 → 又好了」
+
+当前取值为 `max=2000 inactive=2m`（配 `worker_rlimit_nofile 65535`）。降低 `max`
+几乎不损失收益：瓦片一次浏览多是「各不相同、只请求一两次」，缓存命中率本就有限，
+真正受益的是 `manifest.json` 这类重复请求。
+
+若 `worker_rlimit_nofile` 改后仍不生效（`/proc/<pid>/limits` 仍显示 1024），
+说明被 systemd 的 `LimitNOFILE` 压制，需追加 drop-in；注意 `reload` 不足以刷新
+rlimit，必须 `restart`：
+
+```bash
+sudo systemctl edit nginx     # 填入 [Service] / LimitNOFILE=65535
+sudo systemctl restart nginx
+```
+
+验证方式（并发请求上千个互不相同的瓦片后，首页仍应 200）：
+
+```bash
+for p in $(pgrep -u nginx nginx | head -3); do
+  sudo awk '/Max open files/{print $4}' /proc/$p/limits
+done                                                           # 应为 65535
+curl -s -o /dev/null -w "%{http_code}\n" -k https://127.0.0.1/ -H "Host: nwp.gdmo.gq"
+sudo grep -c "Too many open files" /var/log/nginx/error.log    # 不应继续增长
+```
+
 `src/archive_cold_data.py` 负责把超期时次从热盘迁到冷盘，已由 `src/draw_schedule.py`
 每天定时调用（与 SVG 生成共用单 worker 线程池，二者不会并发抢 IO）：
 
@@ -896,6 +947,9 @@ Service Workers / Push 可见订阅，`<push_root>/subscriptions.json` 出现一
 - **新增冷数据归档**：`src/archive_cold_data.py` + `src/draw_schedule.py` 定时调用。
 - **新增远程数据调试**：`WEATHER_REMOTE_DATA=https://nwp.gdmo.gq pnpm dev`，
   见「前端开发与远程数据调试」。
+- **修复首页间歇性 500**：`open_file_cache max=20000` 与 worker 的 FD 上限 1024
+  冲突（缓存条目占用 FD），耗尽后首页 `open()` 失败。现为 `max=2000` 配
+  `worker_rlimit_nofile 65535`，详见「`open_file_cache` 与文件描述符上限」。
 
 ### 早期
 
