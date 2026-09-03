@@ -89,7 +89,8 @@ node generateVapidKeys.js
 cd "${PROJECT_ROOT}"
 pm2 delete weather-draw-schedule 2>/dev/null || true
 pm2 delete weather-trough 2>/dev/null || true
+pm2 delete weather-situation-maps 2>/dev/null || true
 pm2 delete weather-vis-web 2>/dev/null || true
 pm2 startOrReload "${PY_CONFIG}" --update-env
 pm2 save
-pm2 status weather-draw-schedule weather-trough weather-push-server weather-push-schedule
+pm2 status weather-draw-schedule weather-trough weather-situation-maps weather-push-server weather-push-schedule

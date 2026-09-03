@@ -16,8 +16,12 @@ TROUGH_MIN_WIND_SPEED = 3.0
 VORTEX_MIN_VORTICITY = 0.00006
 TROUGH_COLOR = "#8B4513"
 VORTEX_CENTER_COLOR = "#dc2626"
-VORTEX_TRACK_PAST_COLOR = "#111827"
-VORTEX_TRACK_FUTURE_COLOR = "#dc2626"
+VORTEX_TRACK_PAST_COLOR = "#6b7280"
+VORTEX_TRACK_FUTURE_COLOR = "#f97316"
+TRACK_ARROW_FRACTIONS = (0.25, 0.75)
+TRACK_ARROW_LINEWIDTH = 1.8  # 原 1.2 的 1.5 倍
+TRACK_ARROW_MUTATION_SCALE = 9.0  # matplotlib 默认 6 的 1.5 倍
+TRACK_ARROW_LOOKBACK_FRACTION = 0.05
 
 SHEAR_U_TYPES = frozenset({"shear_u_left", "shear_u_right"})
 SHEAR_V_TYPES = frozenset({"shear_v_up", "shear_v_down"})
@@ -234,6 +238,52 @@ def filter_vortex_tracks(tracks_data: dict | None, fc_hour: int | str, warm_only
             continue
         visible.append(track)
     return visible
+
+
+def polyline_point_at_fraction(
+    lons: list[float],
+    lats: list[float],
+    fraction: float,
+) -> tuple[float, float] | None:
+    """按折线弧长比例取样，fraction=0 为起点、1 为终点。"""
+    if len(lons) < 2 or len(lons) != len(lats):
+        return None
+    cum = [0.0]
+    for index in range(1, len(lons)):
+        dx = lons[index] - lons[index - 1]
+        dy = lats[index] - lats[index - 1]
+        cum.append(cum[-1] + (dx * dx + dy * dy) ** 0.5)
+    total = cum[-1]
+    if total <= 0:
+        return None
+    target = max(0.0, min(float(fraction), 1.0)) * total
+    for index in range(1, len(cum)):
+        if cum[index] < target:
+            continue
+        segment = cum[index] - cum[index - 1]
+        t = 0.0 if segment <= 0 else (target - cum[index - 1]) / segment
+        return (
+            lons[index - 1] + t * (lons[index] - lons[index - 1]),
+            lats[index - 1] + t * (lats[index] - lats[index - 1]),
+        )
+    return lons[-1], lats[-1]
+
+
+def polyline_arrow_segment(
+    lons: list[float],
+    lats: list[float],
+    fraction: float,
+    lookback_fraction: float = TRACK_ARROW_LOOKBACK_FRACTION,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """返回沿前进方向的 (箭尾, 箭头) 经纬度。"""
+    tip = polyline_point_at_fraction(lons, lats, fraction)
+    if tip is None:
+        return None
+    tail_frac = max(0.0, float(fraction) - max(float(lookback_fraction), 1e-6))
+    tail = polyline_point_at_fraction(lons, lats, tail_frac)
+    if tail is None or tail == tip:
+        return None
+    return tail, tip
 
 
 def trough_line_points(line: dict) -> list[tuple[float, float]]:

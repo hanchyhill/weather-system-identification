@@ -42,6 +42,14 @@
   - 基于风速阈值和平流符号变化提取急流轴点
   - 支持按起报时次、预报时效和气压层批量输出PNG图像与JSON数据
 
+### 5. 天气形势图合成 (Situation Maps)
+- **文件位置**: `src/situation_maps/`
+- **功能描述**:
+  - 自动化将已生成的 SVG 瓦片（风向杆、高度场等值线、风速填色）栅格化拼合并叠加热动力识别要素
+  - 支持 200、500、850、925 hPa 四个业务层级及中国、华南、广东三个地理覆盖范围
+  - 叠加槽线（区分 U/V 切变与最小风速阈值）、涡旋中心（涡度过滤）与暖心涡旋过去/未来路径
+  - 绘图风格、线宽、颜色及底图轮廓严格对齐 `vis_web` 前端可视化，支持目录变化检测与增量跳过
+
 ## 技术特点
 
 ### 数据源
@@ -79,6 +87,15 @@ weather-system-identification/
 │   ├── vortex_warm_core.py       # 暖心识别脚本
 │   ├── vortex_tracker.py         # 涡旋追踪脚本
 │   ├── vortex_workflow.py        # 涡旋三段式总入口脚本
+│   ├── draw/                     # 前端 SVG 四叉树瓦片生成模块
+│   │   ├── generate_svg_layers.py# 瓦片生成 CLI 入口
+│   │   ├── svg_layer_config.py   # 瓦片投影、边界、层级与样式定义
+│   │   └── ...                   # 瓦片渲染、切片与数据加载组件
+│   ├── situation_maps/           # 天气形势图合成独立子系统
+│   │   ├── generate_situation_maps.py # 目录轮询监听与批量出图 CLI
+│   │   ├── situation_map_composite.py # 瓦片栅格化、要素叠加与绘图引擎
+│   │   ├── situation_map_config.py    # 产品配方、区域范围与过滤参数
+│   │   └── situation_map_basemap.py   # 前端 TopoJSON 底图解析与绘制
 │   ├── draw_schedule.py          # SVG 生成定时调度 + 每日冷数据归档
 │   ├── archive_cold_data.py      # 超期起报时次从热盘迁移到 NFS 冷盘
 │   └── ty-locator/
@@ -770,6 +787,136 @@ uv run python -m unittest discover
 uv run python src/vortex_center.py --init-time 2026062900 --fc-hours 000 006 --levels 850
 uv run python src/vortex_warm_core.py --init-time 2026062900 --fc-hours 000 006
 uv run python src/vortex_tracker.py --init-time 2026062900 --fc-hours 000 006
+```
+
+## 天气形势图合成与输出 (Situation Maps)
+
+`src/situation_maps/` 提供了独立的天气形势综合分析图自动化合成子系统。该模块能够将已生成的 SVG 四叉树瓦片（高度场等值线、风向杆、高空风速填色等）在后台栅格化拼接，并精准叠加热动力天气系统识别算法输出的矢量要素（槽线、低压涡旋中心、暖心涡旋过去与未来路径），输出高质量的气象地理 JPEG 图像。
+
+整个模块采用纯 Python 驱动，绘图风格、线宽比例、要素过滤与底图描边严格对齐 `vis_web` 前端可视化规范，支持目录变化自动检测、防抖等待与增量跳过，不依赖前端浏览器环境即可自动化离线生成。
+
+### 模块结构
+
+- `src/situation_maps/generate_situation_maps.py`：主入口 CLI，支持目录监听守护模式（`--watch`）与单次/批量补齐模式（`--once`）。
+- `src/situation_maps/situation_map_config.py`：定义业务层级配方、三大区域范围 Bounds、要素过滤阈值、线宽与颜色样式等。
+- `src/situation_maps/situation_map_composite.py`：核心出图引擎，负责 SVG 瓦片多层栅格合成、Cartopy 经纬网投影、广东风向杆现场加密、系统矢量叠加、色标图例生成与 JPG 保存。
+- `src/situation_maps/situation_map_basemap.py`：底图加载器，直接解析并绘制 `vis_web/src/source` 下的前端 TopoJSON（`110m.json` 陆地轮廓与 `bou2_4l.topo.simplify.json` 中国省界/九段线）。
+
+### 业务层级配方与过滤规则
+
+系统支持 **200、500、850、925 hPa** 四个层级，各类天气系统要素的过滤与展示规则如下：
+
+| 气压层 | 基础底图与瓦片 | 槽线过滤 (Trough) | 涡旋中心 (Vortex Center) | 涡旋路径 (Vortex Track) | 附加图例/色标 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **500 hPa** | 高度场等值线 + 风羽瓦片 | 仅显示 **V 上切变 / V 下切变**；平均风速 ≥ 3.0 m/s | 标记红粗体 **L**；中心相对涡度 ≥ 0.00006 s⁻¹ | 不显示 | 包含西太副高脊线特征图例（586–588 与 ≥588 dagpm） |
+| **850 hPa** | 高度场等值线 + 风羽瓦片 | 仅显示 **U 左切变 / U 右切变**；平均风速 ≥ 3.0 m/s | 标记红粗体 **L**；中心相对涡度 ≥ 0.00006 s⁻¹ | 显示暖心轨迹（`warm: true` 且当前时效在轨迹区间内）；<br>• **过去路径**：灰色实线（`#6b7280`）<br>• **未来路径**：橙色实线（`#f97316`）<br>• **行进箭头**：在过去/未来段各自的 **1/4 与 3/4** 处标注 1.5 倍放大矢量箭头 | 标明槽线、涡旋中心、过去路径与未来路径图例 |
+| **925 hPa** | 高度场等值线 + 风羽瓦片 | 仅显示 **U 左切变 / U 右切变**；平均风速 ≥ 3.0 m/s | 标记红粗体 **L**；中心相对涡度 ≥ 0.00006 s⁻¹ | 同 850 hPa（过去灰色、未来橙色、1/4 和 3/4 箭头） | 同 850 hPa 图例 |
+| **200 hPa** | 风速填色 + 高度场等值线 + 风羽瓦片 | 仅显示 **V 上切变 / V 下切变**；平均风速 ≥ 3.0 m/s | 标记红粗体 **L**；中心相对涡度 ≥ 0.00006 s⁻¹ | 不显示 | 右侧配高空急流风速填色色标（`wind_speed_fill`，单位 m/s） |
+
+### 地理覆盖范围与瓦片方案
+
+针对不同尺度的天气形势分析需求，系统预置了三个固定地理范围：
+
+1. **中国 (`china`)**:
+   - 经纬度范围：`60.0°E – 150.0°E, 0.0°N – 60.0°N`。
+   - 瓦片方案：使用全幅 `z=0` 瓦片；针对 200/850/925 hPa 的高度场等值线，在光栅化合成时经过 3×3 MaxFilter 形态学加粗（约 2 倍线宽），兼顾大范围概览下的可读性。
+2. **华南 (`huanan`)**:
+   - 经纬度范围：`100.0°E – 125.0°E, 15.0°N – 30.0°N`。
+   - 瓦片方案：使用高清晰度的四叉树 `z=2` 瓦片拼接。
+3. **广东 (`guangdong`)**:
+   - 经纬度范围：`109.0°E – 118.0°E, 20.0°N – 26.0°N`。
+   - 瓦片方案：底图瓦片采用 `z=2`。为保证小区域风场精细诊断，风向杆默认直接连接 TDS 读取 `uwnd`/`vwnd` 现场进行高密度加密绘制（`barb_skip=1`）；若外部 TDS 服务网络超时（设为 25 秒），会自动平滑降级回退为原 `z=2` SVG 瓦片渲染。
+
+### 输出路径与标题规范
+
+形势图 JPEG 输出路径统一遵从以下分区格式：
+
+```text
+{output_root}/{init_time}/situation_maps/{region}/{level}hPa_{fc_hour}.jpg
+```
+
+例如：
+```text
+data/2026080100/situation_maps/china/500hPa_000.jpg
+data/2026080100/situation_maps/huanan/850hPa_024.jpg
+data/2026080100/situation_maps/guangdong/925hPa_024.jpg
+```
+
+**标题格式**：
+位于图片顶部正中，字体为规范中文字体（如 Microsoft YaHei、SimHei 等），字号 24pt。格式为：
+`{气压层}hPa天气形势图  {区域名称}  起报 {YYYY-MM-DD HH}UTC  时效 {fc_hour}h  {D日HH时} BJT`
+例如：`850hPa天气形势图  中国  起报 2026-08-01 00UTC  时效 024h  2日08时 BJT`。
+
+### 运行方式与命令行参数
+
+使用 `src/situation_maps/generate_situation_maps.py` 执行出图：
+
+#### 1. 监听模式（适用于后台守护或常驻监控）
+```bash
+# 自动轮询检测 products 与 json 目录，当所需源文件齐备且写入稳定后自动合成
+uv run python src/situation_maps/generate_situation_maps.py --watch
+```
+
+#### 2. 单次补全模式（手动或批处理运行）
+```bash
+# 处理最新起报时次的所有层级与区域
+uv run python src/situation_maps/generate_situation_maps.py --once
+
+# 指定时次、指定时效、指定层级和区域运行
+uv run python src/situation_maps/generate_situation_maps.py --once \
+  --init-time 2026080100 \
+  --fc-hours 000 024 \
+  --levels 500 850 925 \
+  --regions china huanan guangdong \
+  --output-root ./data \
+  --products-root ./data/products \
+  --debounce-seconds 0 \
+  --overwrite
+```
+
+#### 3. 生产环境 PM2 托管运行
+形势图服务已接入 `ecosystem.weather-business.config.js`（App 名称为 `weather-situation-maps`），由 `./start_weather_business_pm2.sh` 一键统一拉起与热重载：
+
+```bash
+# 一键启动或热重载所有业务服务（含 weather-situation-maps）
+./start_weather_business_pm2.sh
+
+# 查看服务状态与日志
+pm2 status weather-situation-maps
+pm2 logs weather-situation-maps --lines 50
+```
+
+#### CLI 核心参数说明
+
+| 参数 | 说明 | 默认值 |
+| :--- | :--- | :--- |
+| `--watch` | 目录轮询监听模式，检测到新文件后自动触发生成 | 默认模式 |
+| `--once` | 扫描一次指定时次/全部目录后立即退出 | `False` |
+| `--init-time` | 起报时次（`YYYYMMDDHH`） | `--once` 默认自动获取最新起报；`--watch` 默认扫描所有发现的时次 |
+| `--fc-hours` | 指定预报时效列表（如 `000 024 048`） | 默认发现该起报下所有可用的时效 |
+| `--levels` | 指定生成的层次（可选 `200 500 850 925`） | 默认生成全部 4 个层级 |
+| `--regions` | 指定生成的区域（可选 `china huanan guangdong`） | 默认生成全部 3 个区域 |
+| `--output-root` | 数据与 JPG 输出根目录 | 环境变量 `WEATHER_OUTPUT_ROOT` 或系统默认 |
+| `--products-root`| SVG 瓦片存放目录 | 环境变量 `WEATHER_PRODUCTS_ROOT` 或 `<output-root>/products` |
+| `--skip-existing` | 跳过修改时间早于源数据的已有 JPG | 默认启用（增量跳过） |
+| `--overwrite` | 强制重新生成，覆盖已有 JPG | `False` |
+| `--debounce-seconds` | 源文件防抖稳定等待时间（秒） | `--watch` 下为 15s，`--once` 下为 0s |
+| `--poll-interval` | 轮询等待间隔时间（秒） | `30.0` |
+| `--dpi` | 输出 JPEG 图像分辨率 | `150` |
+
+### 冷热存储分层与自动归档支持
+
+形势图直接输出在 `{output_root}/{init_time}/situation_maps/` 目录下，天然归属于同名起报时次。在生产环境中，这带来以下工程优势：
+
+1. **自动归档迁移**：`src/archive_cold_data.py` 每天凌晨执行超期归档时，会按时次整体将 `products/{init_time}` 和 `{init_time}` 迁移到 NFS 冷盘。`situation_maps` 会随该时次的 `trough_data` 等数据**自动一并同步搬迁**，无需额外编写归档逻辑。
+2. **Nginx 统一回落**：`nginx_nwp.conf` 中的 `/data/` 规则配置了对热盘的检查与 `@cold_data` 回落。客户端或系统访问任何时次的形势图 JPG 时，7 天内从本地 SSD 高速命中；7 天后由 Nginx 透明回落到 NFS 冷盘，完全平滑。
+
+### 自动化测试
+
+项目提供了完整的形势图测试集，覆盖要素过滤逻辑、折线分段采样、瓦片几何匹配、就绪防抖判定以及增量跳过：
+
+```bash
+uv run python -m unittest tests.test_situation_maps
 ```
 
 ## 前端加速与实时推送子系统 (Service Worker + Web Push)

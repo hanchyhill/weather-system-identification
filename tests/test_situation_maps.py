@@ -20,10 +20,13 @@ from situation_maps.generate_situation_maps import (  # noqa: E402
 from situation_maps.situation_map_config import (  # noqa: E402
     PRODUCTS,
     REGIONS,
+    TRACK_ARROW_FRACTIONS,
     filter_trough_lines,
     filter_vortex_centers,
     filter_vortex_tracks,
     forecast_bjt_label,
+    polyline_arrow_segment,
+    polyline_point_at_fraction,
     required_json_paths,
     required_svg_paths,
     should_thicken_height_contours,
@@ -122,6 +125,23 @@ class SituationMapFilterTests(unittest.TestCase):
         visible = filter_vortex_tracks(tracks, "006")
         self.assertEqual(len(visible), 1)
         self.assertTrue(visible[0]["warm"])
+
+
+class SituationMapTrackArrowTests(unittest.TestCase):
+    def test_polyline_quarters_on_straight_line(self):
+        lons = [0.0, 10.0]
+        lats = [0.0, 0.0]
+        self.assertEqual(TRACK_ARROW_FRACTIONS, (0.25, 0.75))
+        self.assertEqual(polyline_point_at_fraction(lons, lats, 0.25), (2.5, 0.0))
+        self.assertEqual(polyline_point_at_fraction(lons, lats, 0.75), (7.5, 0.0))
+
+    def test_arrow_segment_points_along_travel_direction(self):
+        lons = [0.0, 10.0]
+        lats = [0.0, 0.0]
+        tail, tip = polyline_arrow_segment(lons, lats, 0.25, lookback_fraction=0.05)
+        self.assertLess(tail[0], tip[0])
+        self.assertAlmostEqual(tip[0], 2.5)
+        self.assertAlmostEqual(tail[0], 2.0)
 
 
 class SituationMapTitleTests(unittest.TestCase):

@@ -91,6 +91,29 @@ module.exports = {
       env: commonEnv,
     },
     {
+      name: 'weather-situation-maps',
+      script: 'bash',
+      args: [
+        '-lc',
+        uvPythonCommand(
+          `src/situation_maps/generate_situation_maps.py --watch`
+          + ` --output-root "${outputRoot}"`
+          + ` --products-root "${productsRoot}"`,
+        ),
+      ],
+      cwd: projectRoot,
+      interpreter: 'none',
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      time: true,
+      max_restarts: 10,
+      restart_delay: 5000,
+      out_file: path.join(logDir, 'weather-situation-maps.out.log'),
+      error_file: path.join(logDir, 'weather-situation-maps.err.log'),
+      env: commonEnv,
+    },
+    {
       // Web Push 订阅服务（Node/Express）：下发 VAPID 公钥、收订阅/退订。nginx 反代 /api/ 到此端口。
       name: 'weather-push-server',
       script: 'server.js',

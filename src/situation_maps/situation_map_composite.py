@@ -20,6 +20,9 @@ from situation_maps.situation_map_basemap import draw_frontend_basemap
 from situation_maps.situation_map_config import (
     PRODUCTS,
     REGIONS,
+    TRACK_ARROW_FRACTIONS,
+    TRACK_ARROW_LINEWIDTH,
+    TRACK_ARROW_MUTATION_SCALE,
     TROUGH_COLOR,
     VORTEX_CENTER_COLOR,
     VORTEX_TRACK_FUTURE_COLOR,
@@ -30,6 +33,7 @@ from situation_maps.situation_map_config import (
     filter_vortex_centers,
     filter_vortex_tracks,
     is_fill_layer,
+    polyline_arrow_segment,
     should_thicken_height_contours,
     situation_title,
     tile_zoom_for_layer,
@@ -274,18 +278,28 @@ def _track_point_step(point: dict) -> float | None:
         return None
 
 
-def _draw_track_arrow(ax, lons: list[float], lats: list[float], color: str) -> None:
+def _draw_track_arrows(ax, lons: list[float], lats: list[float], color: str) -> None:
     if len(lons) < 2:
         return
-    ax.annotate(
-        "",
-        xy=(lons[-1], lats[-1]),
-        xytext=(lons[-2], lats[-2]),
-        arrowprops={"arrowstyle": "-|>", "color": color, "lw": 1.2},
-        transform=ccrs.PlateCarree(),
-        zorder=9,
-        annotation_clip=True,
-    )
+    for fraction in TRACK_ARROW_FRACTIONS:
+        segment = polyline_arrow_segment(lons, lats, fraction)
+        if segment is None:
+            continue
+        (x0, y0), (x1, y1) = segment
+        ax.annotate(
+            "",
+            xy=(x1, y1),
+            xytext=(x0, y0),
+            arrowprops={
+                "arrowstyle": "-|>",
+                "color": color,
+                "lw": TRACK_ARROW_LINEWIDTH,
+                "mutation_scale": TRACK_ARROW_MUTATION_SCALE,
+            },
+            transform=ccrs.PlateCarree(),
+            zorder=9,
+            annotation_clip=True,
+        )
 
 
 def _draw_tracks(ax, tracks: list[dict], fc_hour: str, linewidth: float) -> None:
@@ -318,7 +332,7 @@ def _draw_tracks(ax, tracks: list[dict], fc_hour: str, linewidth: float) -> None
                 transform=ccrs.PlateCarree(),
                 zorder=9,
             )
-            _draw_track_arrow(ax, lons, lats, color)
+            _draw_track_arrows(ax, lons, lats, color)
 
 
 def _finite_lon_lat(point: dict) -> bool:

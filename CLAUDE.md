@@ -58,7 +58,7 @@ pnpm build      # 产物输出 vis_web/dist
 
 **SVG 瓦片系统**：`draw/generate_svg_layers.py` 按 `{init_time}/{fc_hour}/{level}/{layer_type}/{z}/{x}/{y}.svg` 输出四叉树瓦片并写 `manifest.json`。瓦片投影/边界/缩放层级（PlateCarree、60–150°E、0–60°N、z=0..2）与图层样式定义在 `draw/svg_layer_config.py` —— 前端渲染依赖此 tile scheme，两端需保持一致。
 
-**定时调度**：`src/schedule.py`（每小时 :16/:46 跑 jet+trough+vortex）与 `src/draw_schedule.py`（每 10 分钟生成 SVG 图层）是长驻进程，由 `ecosystem.weather-business.config.js` 定义为两个 PM2 app。`nginx_nwp.conf` 将 `/data/` 映射到 `/data/weather_vis/`、`/` 指向 `vis_web/dist`。
+**定时调度**：`src/schedule.py`（每小时 :16/:46 跑 jet+trough+vortex）、`src/draw_schedule.py`（每 10 分钟生成 SVG 图层）与 `src/situation_maps/generate_situation_maps.py`（形势图目录监听合成）是长驻进程，由 `ecosystem.weather-business.config.js` 统一管理。`nginx_nwp.conf` 将 `/data/` 映射到 `/data/weather_vis/`、`/` 指向 `vis_web/dist`。
 
 **前端结构**（Vue 3 + Vite + Pinia + d3 + naive-ui）：核心逻辑集中在 `composables/useWeatherView.js`（视图状态、瓦片/数据加载、多图联动），`components/` 下按功能拆分（`MapWorkspace`/`MultiMap*` 单图与多图对比、`ControlRail` 控制栏、`ForecastSlider` 时效滑块、`DrawingToolbar`+`utils/mapDrawing.js` 绘制标注）。瓦片响应用 `utils/indexedDBCache.js` 做 IndexedDB 缓存。
 
